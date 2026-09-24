@@ -26,9 +26,15 @@ METRIC_DB_URI = (
 )
 
 # --- virtual datasets: name -> SQL -------------------------------------------
+# Coverage main lines only use the measurement taken when the golden set was
+# built (is_recheck = false), so later re-measurements don't interleave with it.
 DATASETS = {
     "vw_crawler_overview": (
-        "SELECT stat_date, discovered, crawled, indexed\n"
+        "SELECT stat_date, discovered, crawled\n"
+        "FROM crawler_stat_total ORDER BY stat_date"
+    ),
+    "vw_index_selection": (
+        "SELECT stat_date, indexed AS selected\n"
         "FROM crawler_stat_total ORDER BY stat_date"
     ),
     "vw_crawled_rolling": (
@@ -44,17 +50,39 @@ DATASETS = {
         "FROM crawler_stat_total ORDER BY stat_date"
     ),
     "vw_headset_coverage": (
-        "SELECT stat_date, discovered_rate, crawled_rate, indexed_rate, ranked_rate\n"
-        "FROM metric_headset_total ORDER BY stat_date"
+        "SELECT stat_date, discovered_rate, crawled_rate, indexed_rate\n"
+        "FROM metric_headset_total WHERE NOT is_recheck ORDER BY stat_date"
     ),
     "vw_randomset_coverage": (
-        "SELECT stat_date, discovered_rate, crawled_rate, indexed_rate, ranked_rate\n"
-        "FROM metric_randomset_total ORDER BY stat_date"
+        "SELECT stat_date, discovered_rate, crawled_rate, indexed_rate\n"
+        "FROM metric_randomset_total WHERE NOT is_recheck ORDER BY stat_date"
+    ),
+    # One line per batch age: how much of each batch was discovered on the day
+    # it was built and 7 / 14 / 27 days later (before golden_inject at 4 weeks).
+    "vw_headset_coverage_by_age": (
+        "SELECT CAST(b.created_at AS date) AS batch_date,\n"
+        "       'day ' || lpad(c.batch_age_days::text, 2, '0') AS measured,\n"
+        "       c.discovered_rate, c.crawled_rate\n"
+        "FROM metric_headset_total c JOIN metric_batches b ON b.id = c.batch_id\n"
+        "WHERE c.batch_age_days IN (0, 7, 14, 27) ORDER BY batch_date"
+    ),
+    "vw_randomset_coverage_by_age": (
+        "SELECT CAST(b.created_at AS date) AS batch_date,\n"
+        "       'day ' || lpad(c.batch_age_days::text, 2, '0') AS measured,\n"
+        "       c.discovered_rate, c.crawled_rate\n"
+        "FROM metric_randomset_total c JOIN metric_batches b ON b.id = c.batch_id\n"
+        "WHERE c.batch_age_days IN (0, 7, 14, 27) ORDER BY batch_date"
     ),
     "vw_request_sent": (
         "SELECT stat_date, fetch_total, fetch_ok, fetch_fail\n"
         "FROM crawler_stat_total ORDER BY stat_date"
     ),
+}
+
+# Time column per dataset (default: stat_date).
+DATASET_TIME_COLUMN = {
+    "vw_headset_coverage_by_age": "batch_date",
+    "vw_randomset_coverage_by_age": "batch_date",
 }
 
 
@@ -75,7 +103,15 @@ CHARTS = [
         "metrics": [
             metric("MAX(discovered)", "T - Discovered"),
             metric("MAX(crawled)", "T - Crawled"),
-            metric("MAX(indexed)", "T - Indexed"),
+        ],
+    },
+    {
+        # Own chart: ~3e7 selected URLs vanish at the bottom of a ~5e9 axis.
+        "name": "Index Selection - Selected URLs",
+        "markers": True,
+        "dataset": "vw_index_selection",
+        "metrics": [
+            metric("MAX(selected)", "Selected"),
         ],
     },
     {
@@ -89,24 +125,46 @@ CHARTS = [
     },
     {
         "name": "HeadSet Coverage",
+        "markers": True,
         "dataset": "vw_headset_coverage",
         "y_format": ".0%",
         "metrics": [
             metric("MAX(discovered_rate)", "H - DiscCov"),
             metric("MAX(crawled_rate)", "H - CrawlCov"),
             metric("MAX(indexed_rate)", "H - IndexCov"),
-            metric("MAX(ranked_rate)", "H - RankCov"),
         ],
     },
     {
         "name": "RandomSet Coverage",
+        "markers": True,
         "dataset": "vw_randomset_coverage",
         "y_format": ".0%",
         "metrics": [
             metric("MAX(discovered_rate)", "R - DiscCov"),
             metric("MAX(crawled_rate)", "R - CrawlCov"),
             metric("MAX(indexed_rate)", "R - IndexCov"),
-            metric("MAX(ranked_rate)", "R - RankCov"),
+        ],
+    },
+    {
+        "name": "HeadSet Discovery by Batch Age",
+        "markers": True,
+        "dataset": "vw_headset_coverage_by_age",
+        "x_axis": "batch_date",
+        "groupby": ["measured"],
+        "y_format": ".0%",
+        "metrics": [
+            metric("MAX(discovered_rate)", "H - DiscCov"),
+        ],
+    },
+    {
+        "name": "RandomSet Discovery by Batch Age",
+        "markers": True,
+        "dataset": "vw_randomset_coverage_by_age",
+        "x_axis": "batch_date",
+        "groupby": ["measured"],
+        "y_format": ".0%",
+        "metrics": [
+            metric("MAX(discovered_rate)", "R - DiscCov"),
         ],
     },
     {
@@ -181,7 +239,7 @@ class Superset:
         )
 
     # -- datasets -----------------------------------------------------------
-    def ensure_dataset(self, db_id, table_name, sql):
+    def ensure_dataset(self, db_id, table_name, sql, time_col="stat_date"):
         existing = self._list("dataset", "table_name")
         if table_name in existing:
             ds_id = existing[table_name]
@@ -197,7 +255,7 @@ class Superset:
                     "sql": sql,
                 },
             )
-        self._mark_temporal(ds_id, "stat_date")
+        self._mark_temporal(ds_id, time_col)
         return ds_id
 
     def _mark_temporal(self, ds_id, col_name):
@@ -228,15 +286,18 @@ class Superset:
         params = {
             "viz_type": "echarts_timeseries_line",
             "datasource": f"{ds_id}__table",
-            "x_axis": "stat_date",
+            "x_axis": spec.get("x_axis", "stat_date"),
             "x_axis_sort_asc": True,
             "x_axis_title_margin": 15,
             "metrics": spec["metrics"],
-            "groupby": [],
+            "groupby": spec.get("groupby", []),
             "adhoc_filters": [],
             "row_limit": 10000,
             "order_desc": True,
             "show_legend": True,
+            # Sparse series (two batches a month, one point per re-measure age)
+            # are invisible as a bare line until they have two points.
+            "markerEnabled": spec.get("markers", False),
             "markerSize": 6,
             "opacity": 0.2,
             "seriesType": "line",
@@ -326,7 +387,9 @@ def main():
 
     ds_ids = {}
     for name, sql in DATASETS.items():
-        ds_ids[name] = sup.ensure_dataset(db_id, name, sql)
+        ds_ids[name] = sup.ensure_dataset(
+            db_id, name, sql, DATASET_TIME_COLUMN.get(name, "stat_date")
+        )
         print(f"dataset {name} -> id {ds_ids[name]}")
 
     chart_ids = []

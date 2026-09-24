@@ -29,7 +29,9 @@ It coordinates three layers:
 - `--test`: Execute measure phase.
 - `--typesense_url`: Reserved/not actively used by current active measures.
 - `--measure [status|rank|crawler_all|all]...`: Which measure(s) to execute.
-- `--createtable`: Create metric tables before execution.
+- `--batch_id <id>`: `crawler_all` measures this batch instead of the latest one.
+- `--batch_age_days <N>...`: `crawler_all` measures every batch created exactly N days ago (used by the daily re-measure cron with `7 14 27`).
+- `--createtable`: Create metric tables and upgrade existing ones (see 3.1) before execution.
 
 ## 3. Runtime Modes
 
@@ -41,6 +43,7 @@ It coordinates three layers:
     - `metric_headset_total`, `metric_headset_a`, `metric_headset_b`
     - `metric_randomset_total`, `metric_randomset_a`, `metric_randomset_b`
   - Calls `createDB(..., createTable=True, base=MetricBase)` for metric DB.
+  - Calls `Database/migrations.py:migrate_metric_db()`. `create_all` never alters an existing table, so this adds the new columns to existing tables: `batch_id` / `measured_at` / `batch_age_days` / `is_recheck` on the six coverage tables (primary key becomes `(batch_id, stat_date)`, old rows get the latest batch created on or before their `stat_date`), and the `url_canonical` + crawler-detail columns on `metric_url`. On the first upgrade it also turns never-measured zeros into NULL (`indexed_*` before selectdb was wired in, all `ranked_*`, `crawler_stat_*.indexed`). Safe to re-run; the container runs it on every start (`entrypoint.sh`).
 
 ### 3.2 Dataset creation mode (`--create`)
 
@@ -63,9 +66,13 @@ Flow:
 ### 3.3 Measure execution mode (`--test`)
 
 - `status`: runs `CrawlerStatusMeasure`.
-- `crawler_all`: for each selected strategy tag (`head`/`random`), runs `CrawlerAllMetricMeasure`.
+- `status`: `indexed` on `crawler_stat_total` is `count(*)` of `selectdb.selected_urls_current` (needs `--select_db_url`; NULL otherwise, and a failed count keeps the value measured earlier that day). Team A/B tables have no selectdb split, so their `indexed` is NULL.
+- `crawler_all`: for each batch (latest, `--batch_id`, or `--batch_age_days`) and each selected strategy tag (`head`/`random`), runs `CrawlerAllMetricMeasure`.
+  - Golden URLs are passed through w3lib `canonicalize_url` (the spider's key) before matching; the raw spelling is looked up too, for rows injected before `golden_inject` canonicalized.
   - Queries `selectdb.selected_urls_current` to determine `is_indexed` flag per golden URL.
-  - Without `--select_db_url`, indexed always reports `False`.
+  - Without `--select_db_url`, or if selectdb fails, `indexed_num` / `indexed_rate` are written as NULL (not measured) and the other columns are still written.
+  - Rows written by a run that also did `--create` have `is_recheck = false` (the t0 measurement); every other run writes `is_recheck = true`.
+  - If any `url_state_current_*` shard cannot be scanned, the run aborts without writing coverage, rather than writing an undercount.
 - `rank`: currently no-op in active implementation.
 
 ## 4. DB Initialization
@@ -127,7 +134,8 @@ flowchart TD
 
 ## 7. Operational Notes
 
-- `rank` pathway is not active; do not assume search ranking KPIs are written.
-- `indexed` is now populated from `selectdb.selected_urls_current` when `--select_db_url` is provided.
+- `rank` pathway is not active; `ranked_num` / `ranked_rate` are written as NULL.
+- `indexed` is populated from `selectdb.selected_urls_current` when `--select_db_url` is provided.
+- `indexed` means "selected by IndexSelection", which does not require the page to have been fetched, so IndexCov can exceed CrawlCov. `metric_url.is_indexed AND NOT is_crawled` counts those URLs.
 - `--measure all` appears in choices but no explicit branch handles it in current code.
 

@@ -30,13 +30,16 @@ ENV SERPAPI_KEY="YOUR_ACTUAL_API_KEY_HERE"
 RUN echo "SERPAPI_KEY=$SERPAPI_KEY" >> /etc/environment
 
 RUN echo "\
-# 每小時執行一次 (Status) \n\
-0 * * * * cd /root/WebSearchEngine && /root/system-venv/bin/python3 measure.py --test --metric_db_url 172.16.191.1:5433 --crawler_db_url 172.16.191.1:5432 --measure status >> /var/log/cron.log 2>&1 \n\
+# 每小時執行一次 (Status)，selected 數量從 selectdb 讀 \n\
+0 * * * * cd /root/WebSearchEngine && /root/system-venv/bin/python3 measure.py --test --metric_db_url 172.16.191.1:5433 --crawler_db_url 172.16.191.1:5432 --select_db_url 172.16.191.1:5444 --measure status >> /var/log/cron.log 2>&1 \n\
 0 * * * * cd /root/WebSearchEngine && /root/system-venv/bin/python3 migrate.py >> /var/log/cron.log 2>&1 \n\
 # 每月 1 號與 16 號 中午 12 點 (Strategy: random) \n\
-0 12 1,16 * * cd /root/WebSearchEngine && /root/system-venv/bin/python3 measure.py --create --metric_db_url 172.16.191.1:5433 --crawler_db_url 172.16.191.1:5432 --select_db_url 172.16.191.1:5444 --strategy random --keywordNums 50 --test --measure crawler_all >> /var/log/cron.log 2>&1 \n\
+# --update 12：2/16 到 3/1 只隔 13 天，快取天數要小於 13，否則 3/1 會沿用 2/16 的 batch \n\
+0 12 1,16 * * cd /root/WebSearchEngine && /root/system-venv/bin/python3 measure.py --create --metric_db_url 172.16.191.1:5433 --crawler_db_url 172.16.191.1:5432 --select_db_url 172.16.191.1:5444 --strategy random --keywordNums 50 --update 12 --test --measure crawler_all >> /var/log/cron.log 2>&1 \n\
 # 每月 1 號與 16 號 下午 6 點 (Strategy: head) \n\
-0 18 1,16 * * cd /root/WebSearchEngine && /root/system-venv/bin/python3 measure.py --create --metric_db_url 172.16.191.1:5433 --crawler_db_url 172.16.191.1:5432 --select_db_url 172.16.191.1:5444 --strategy head --keywordNums 50 --test --measure crawler_all >> /var/log/cron.log 2>&1 \n\
+0 18 1,16 * * cd /root/WebSearchEngine && /root/system-venv/bin/python3 measure.py --create --metric_db_url 172.16.191.1:5433 --crawler_db_url 172.16.191.1:5432 --select_db_url 172.16.191.1:5444 --strategy head --keywordNums 50 --update 12 --test --measure crawler_all >> /var/log/cron.log 2>&1 \n\
+# 每天早上 6 點：重量建立滿 7、14、27 天的 batch (27 天排在 golden_inject 4 週注入之前) \n\
+0 6 * * * cd /root/WebSearchEngine && /root/system-venv/bin/python3 measure.py --test --metric_db_url 172.16.191.1:5433 --crawler_db_url 172.16.191.1:5432 --select_db_url 172.16.191.1:5444 --strategy random head --measure crawler_all --batch_age_days 7 14 27 >> /var/log/cron.log 2>&1 \n\
 " > /etc/cron.d/search-engine-cron
 
 # 賦予 crontab 檔案權限並套用
@@ -45,5 +48,6 @@ RUN chmod 0644 /etc/cron.d/search-engine-cron && crontab /etc/cron.d/search-engi
 # 建立日誌檔案以便查看
 RUN touch /var/log/cron.log
 
-# 啟動 cron 並持續輸出日誌，防止容器停止
-CMD cron && tail -f /var/log/cron.log
+# 啟動時先升級 metricdb schema，把 NEON_URL 交給 cron，再啟動 cron 並持續輸出日誌
+RUN chmod +x /root/WebSearchEngine/entrypoint.sh
+CMD ["/root/WebSearchEngine/entrypoint.sh"]

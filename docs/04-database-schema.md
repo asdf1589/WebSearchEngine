@@ -15,11 +15,11 @@ Generated via `UrlStateCurrentMixin` + suffix `000..255`.
 
 Core columns used by measurement:
 
-- `url` (PK)
+- `url` (PK). Always the w3lib `canonicalize_url` spelling for rows written by the crawler, so golden URLs are canonicalized before matching.
 - `domain_id`
 - `last_fetch_ok` (nullable timestamp; non-null => crawled)
 
-Additional signals exist (scores, fail counters, hash fields), but not used directly in current metric aggregation.
+Copied into `metric_url` for failure analysis (not used in the rates): `first_seen`, `last_scheduled`, `source` (0 natural, 1 golden_inject, 2 wiki pageview, 3 golden parent patrol), `robots_bits` (0 unknown, 1 allowed, 2 disallowed), `last_fail_reason`, `num_scheduled_90d`, `num_fetch_fail_90d`.
 
 ### 2.2 `domain_state`
 
@@ -28,7 +28,7 @@ Additional signals exist (scores, fail counters, hash fields), but not used dire
 - `shard_id`
 - `domain_score`
 
-Used to map domain -> shard/team when URL is not directly found.
+Used to map domain -> shard/team when URL is not directly found. `domain` is the eTLD+1 for ordinary hosts and the full host for subdomains whitelisted in `shard_split_subdomain`, so the lookup tries the URL's host first and then its eTLD+1.
 
 ### 2.3 `summary_daily`
 
@@ -76,8 +76,12 @@ Represents keyword-level dataset units.
 - `is_indexed`
 - `is_ranked`
 - `shard_id`
+- `url_canonical`: `canonicalize_url(url)`, the spelling used to match crawlerdb/selectdb
+- `first_seen`, `last_scheduled`, `source`, `robots_bits`, `last_fail_reason`, `num_scheduled_90d`, `num_fetch_fail_90d`: copied from the matching `url_state_current` row at the latest measurement (NULL if not discovered)
 
-Represents URL-level golden entries and measurement labels.
+Represents URL-level golden entries and measurement labels. The labels reflect the latest measurement of the batch; the coverage tables keep each measurement.
+
+`is_indexed` is NULL when selectdb was not measured.
 
 ## 4. Metric Rollup Tables (Dynamic)
 
@@ -89,7 +93,7 @@ Represents URL-level golden entries and measurement labels.
 
 Shared schema from `CrawlerStatMixin`:
 
-- snapshot: `discovered`, `crawled`, `indexed`
+- snapshot: `discovered`, `crawled`, `indexed` (`indexed` = rows in `selectdb.selected_urls_current`, Total only; NULL when not measured)
 - daily flow: `fetch_ok`, `fetch_fail`, `fetch_total`
 - rolling windows: `*_7`, `*_30`
 - HTTP errors: 404 and 500 for 1/7/30 day windows
@@ -106,10 +110,14 @@ Shared schema from `MetricCoverageMixin`:
 - `total`
 - `discovered_num`, `discovered_rate`
 - `crawled_num`, `crawled_rate`
-- `indexed_num`, `indexed_rate`
-- `ranked_num`, `ranked_rate`
+- `batch_id`: the `metric_batches.id` that was measured
+- `measured_at`: timestamp of the measurement (NULL on rows written before this column existed)
+- `batch_age_days`: `stat_date` minus the batch's creation date
+- `is_recheck`: false for the measurement taken right after the golden set was built (`--create --test`), true for later re-measurements
+- `indexed_num`, `indexed_rate` (NULL when selectdb was not measured)
+- `ranked_num`, `ranked_rate` (not implemented; NULL)
 
-PK: `stat_date`.
+PK: `(batch_id, stat_date)`. Several batches can be measured on the same day, and the same batch on several days.
 
 ## 5. Team Partition Definition
 
@@ -153,6 +161,10 @@ erDiagram
       bool is_indexed
       bool is_ranked
       int shard_id
+      text url_canonical
+      smallint source
+      smallint robots_bits
+      text last_fail_reason
     }
 ```
 

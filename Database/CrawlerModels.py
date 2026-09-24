@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Boolean, Float, DateTime, Date, Computed
+from sqlalchemy import Column, String, Integer, SmallInteger, Boolean, Float, DateTime, Date, Computed
 from sqlalchemy.dialects.postgresql import JSONB, BYTEA
 from sqlalchemy.sql import func
 from sqlalchemy.orm import declarative_base, declarative_mixin
@@ -33,6 +33,11 @@ class UrlStateCurrentMixin:
     # Priority signals
     url_score = Column(Float, default=0.0)
     domain_score = Column(Float, default=0.0)
+
+    # 0 = natural, 1 = golden_inject, 2 = wiki pageview, 3 = golden parent patrol
+    source = Column(SmallInteger, default=0)
+    # 0 = unknown, 1 = allowed, 2 = disallowed by robots.txt
+    robots_bits = Column(SmallInteger, default=0)
 
 @declarative_mixin
 class ContentFeatureCurrentMixin:

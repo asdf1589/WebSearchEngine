@@ -96,6 +96,30 @@ JOIN metric_queries mq ON mq.id = mu.query_id
 WHERE mq.batch_id = :batch_id;
 ```
 
+### 3.4a Golden URL matching
+
+`metric_url.url` is the raw SerpApi `link`. The crawler stores every URL as
+w3lib `canonicalize_url(...)` (query keys sorted, percent-escapes upper-cased,
+non-ASCII percent-encoded, fragment dropped, empty path -> `/`), and
+`url_state_current` / `selected_urls_current` are keyed by that string. So each
+golden URL is canonicalized first; raw spellings that canonicalize to the same
+string count as one URL. Both spellings are looked up, because
+`golden_inject` inserted raw strings before it canonicalized them.
+
+For every shard `url_state_current_000..255`:
+
+```sql
+SELECT url, last_fetch_ok IS NOT NULL AS crawled, first_seen, last_scheduled,
+       source, robots_bits, last_fail_reason, num_scheduled_90d, num_fetch_fail_90d
+FROM url_state_current_###
+WHERE url IN (:canonical_and_raw_urls);
+```
+
+- discovered: at least one row in any shard.
+- crawled: at least one of those rows has `last_fetch_ok` (OR across shards and spellings; a later non-crawled row never overrides an earlier crawled one).
+- shard / team: the crawled row's shard, else the first row found; if no row, `domain_state` by the URL's host, then by its eTLD+1.
+- If any shard cannot be read the run aborts without writing coverage.
+
 ### 3.5 Status snapshot per shard
 
 For each `url_state_current_###` table:
@@ -125,31 +149,51 @@ FROM public.selected_urls_current
 WHERE url = ANY(:golden_urls);
 ```
 
-URLs found in the result set are marked `is_indexed = True`. This query is batched in chunks of 10,000 URLs.
+URLs found in the result set are marked `is_indexed = True`. This query is batched in chunks of 10,000 URLs and uses the same canonical + raw spellings as 3.4a. If selectdb is not configured or the query fails, `is_indexed` and `indexed_*` are written as NULL.
+
+"Indexed" here means selected by IndexSelection, which does not require the page to have been fetched. To see how many selected golden URLs were never fetched:
+
+```sql
+SELECT count(*) FILTER (WHERE is_indexed AND NOT is_crawled) AS selected_not_crawled,
+       count(*) FILTER (WHERE is_indexed) AS selected
+FROM metric_url mu JOIN metric_queries mq ON mq.id = mu.query_id
+WHERE mq.batch_id = :batch_id;
+```
 
 ### 3.7 Coverage formulas
 
 For each group `G in {Total, A, B}`:
 
-- `total_G = count(url in group)`
+- `total_G = count(distinct canonical url in group)`
 - `discovered_rate_G = discovered_num_G / total_G`
 - `crawled_rate_G = crawled_num_G / total_G`
 - `indexed_rate_G = indexed_num_G / total_G`
 
-`ranked_*` currently hardcoded to zero in current implementation.
+`ranked_*` is not implemented and written as NULL. `indexed_*` is NULL when not measured.
+
+Each coverage row also records `batch_id`, `measured_at`, `batch_age_days` and
+`is_recheck` (false only for the run that built the golden set). The daily
+cron re-measures each batch at 7, 14 and 27 days, so the gap between the t0
+row and the day-27 row shows how much the crawler discovered on its own after
+the queries trended, before `golden_inject` force-injects the batch at 4 weeks.
+After injection, discovered rates of that batch are close to 100% by
+construction; `metric_url.source` / `first_seen` separate injected from
+naturally discovered rows.
 
 ## 4. UPSERT Write Patterns
 
-Status and coverage tables use PostgreSQL upsert semantics:
+Status tables upsert on `stat_date`; coverage tables upsert on `(batch_id, stat_date)`:
 
 ```sql
-INSERT INTO <target_table>(stat_date, ...)
-VALUES (:stat_date, ...)
-ON CONFLICT (stat_date)
+INSERT INTO metric_headset_total (batch_id, stat_date, ...)
+VALUES (:batch_id, :stat_date, ...)
+ON CONFLICT (batch_id, stat_date)
 DO UPDATE SET ...;
 ```
 
-This ensures idempotent daily reruns.
+This keeps same-day reruns idempotent while letting different batches (or the
+same batch on different days) have their own rows. On the status tables,
+`indexed` keeps the value already stored for the day when the new count is NULL.
 
 ## 5. URL Sources and External Endpoints
 
@@ -183,7 +227,7 @@ Cron defaults in Dockerfile currently use:
 
 ### 5.3 Migration target URL
 
-`migrate.py` writes to Neon PostgreSQL URL with SSL requirement.
+`migrate.py` writes to the Neon PostgreSQL URL given in the `NEON_URL` environment variable (SSL required).
 
 ## 6. Important Current Limitations
 

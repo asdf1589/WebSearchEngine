@@ -2,24 +2,24 @@ from Metric.Measure.Measure import Measure
 from Database.Database import Database
 from Database.ModelFactory.AppModelFactory import AppModelFactory
 from datetime import datetime, timedelta, date
-from sqlalchemy import func, case, select, and_
+from sqlalchemy import func, case, select, and_, text
 from sqlalchemy.dialects.postgresql import insert
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from collections import defaultdict
 
 class CrawlerStatusMeasure(Measure):
-    def __init__(self, modelFactory: AppModelFactory, crawlerDB: Database, metricDB: Database):
+    def __init__(self, modelFactory: AppModelFactory, crawlerDB: Database, metricDB: Database, selectDB: Database = None):
         super().__init__()
         self.crawlerDB: Database = crawlerDB
         self.metricDB: Database = metricDB
+        self.selectDB: Database = selectDB
         self.modelFactory: AppModelFactory = modelFactory
     
     def _scan_shard(self, shard_id):
         """
         掃描單一分片，取得目前的 Snapshot 狀態
-        回傳 (shard_id, discovered, crawled, indexed)
-        * indexed 為 0，需另建立 Index DB
+        回傳 (shard_id, discovered, crawled)
         """
         with self.crawlerDB.session() as session:
             try:
@@ -31,10 +31,26 @@ class CrawlerStatusMeasure(Measure):
                 )
                 
                 result = session.execute(stmt).one()
-                return shard_id, result[0], result[1], 0
+                return shard_id, result[0], result[1]
                 
             except Exception as e:
-                return shard_id, 0, 0, 0
+                print(f"[Error] scan url_state_current_{shard_id:03d} failed: {e}")
+                return shard_id, 0, 0
+
+    def _count_selected(self):
+        """
+        IndexSelection 目前選中的 URL 數 (selectdb.selected_urls_current)。
+        沒有 selectdb 或查詢失敗回傳 None，寫進 DB 是 NULL，圖上留空。
+        selectdb 無法拆成 Team A / B，所以只有 Total 有值。
+        """
+        if self.selectDB is None:
+            return None
+        try:
+            with self.selectDB.session() as session:
+                return session.execute(text("SELECT count(*) FROM public.selected_urls_current")).scalar()
+        except Exception as e:
+            print(f"[Warning] selectdb count failed: {e}")
+            return None
 
     def _get_daily_summary_stats(self, target_date: date):
         """
@@ -111,9 +127,9 @@ class CrawlerStatusMeasure(Measure):
         # 1. 初始化 Snapshot 統計容器
         # 這些是從 url_state 算出來的累計值 (Total Snapshot)
         snapshot_stats = {
-            "Total":   {"discovered": 0, "crawled": 0, "indexed": 0},
-            "A":       {"discovered": 0, "crawled": 0, "indexed": 0}, # 000-127
-            "B":       {"discovered": 0, "crawled": 0, "indexed": 0}  # 128-255
+            "Total":   {"discovered": 0, "crawled": 0, "indexed": None},
+            "A":       {"discovered": 0, "crawled": 0, "indexed": None}, # 000-127
+            "B":       {"discovered": 0, "crawled": 0, "indexed": None}  # 128-255
         }
 
         print(f'🚀 Start Measuring Status - {date_str}')
@@ -125,7 +141,7 @@ class CrawlerStatusMeasure(Measure):
             futures = [executor.submit(self._scan_shard, i) for i in range(256)]
             
             for future in tqdm(as_completed(futures), total=256, desc="Scanning Shards"):
-                shard_id, disc, crawl, idx = future.result()
+                shard_id, disc, crawl = future.result()
                 
                 # 分類 Team A / Team B
                 if 0 <= shard_id <= 127:
@@ -134,9 +150,11 @@ class CrawlerStatusMeasure(Measure):
                     team_key = "B"
                 
                 # 累加 (Team & Total)
-                for key, val in [("discovered", disc), ("crawled", crawl), ("indexed", idx)]:
+                for key, val in [("discovered", disc), ("crawled", crawl)]:
                     snapshot_stats[team_key][key] += val
                     snapshot_stats["Total"][key] += val
+
+        snapshot_stats["Total"]["indexed"] = self._count_selected()
 
         # 3. [Flow] 計算 SummaryDaily 統計 (Fetch & Errors & Rolling)
         print("   [2/3] Calculating Daily & Rolling Stats...")
@@ -184,7 +202,8 @@ class CrawlerStatusMeasure(Measure):
                 stmt = insert(ModelClass).values(row_data)
                 stmt = stmt.on_conflict_do_update(
                     index_elements=['stat_date'],
-                    set_=row_data
+                    # 這次 selectdb 沒量到 (NULL) 時，保留當天稍早量到的值
+                    set_={**row_data, "indexed": func.coalesce(stmt.excluded.indexed, ModelClass.indexed)}
                 )
                 
                 session.execute(stmt)
@@ -205,7 +224,8 @@ class CrawlerStatusMeasure(Measure):
         print("-" * len(headers))
         for group in ["A", "B", "Total"]:
             d = snapshot_stats[group]
-            print(f"{group:<8} | {d['discovered']:>12,} | {d['crawled']:>12,} | {d['indexed']:>12,}")
+            indexed = f"{d['indexed']:>12,}" if d['indexed'] is not None else f"{'N/A':>12}"
+            print(f"{group:<8} | {d['discovered']:>12,} | {d['crawled']:>12,} | {indexed}")
             
         print("-" * 50)
         # Flow Report (Total Only)

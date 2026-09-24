@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Date, Integer, BigInteger, Float, String, ForeignKey, Text, DateTime, Index, Boolean
+from sqlalchemy import Column, Date, Integer, SmallInteger, BigInteger, Float, String, ForeignKey, Text, DateTime, Index, Boolean, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, declarative_mixin, relationship
 from datetime import datetime
@@ -52,9 +52,18 @@ class CrawlerStatMixin:
 # ==========================================
 # 這個 Mixin 包含第二組 (Total, A, B) 共用的欄位
 # 包含 HeadSet 與 RandomSet 的統計
+# 主鍵是 (batch_id, stat_date)：同一天可以量不同 batch，同一個 batch 也可以在不同天重量。
 @declarative_mixin
 class MetricCoverageMixin:
+    batch_id  = Column(BigInteger, primary_key=True)
     stat_date = Column(Date, primary_key=True)
+
+    measured_at    = Column(DateTime, nullable=True)
+    # stat_date 與 batch 建立日期相差幾天 (0 = 建立當天)
+    batch_age_days = Column(Integer, nullable=True)
+    # False: 由 --create --test 在建立 golden set 當下量的 (t0)
+    # True : 之後重量的 (--batch_id / --batch_age_days / 單獨 --test)
+    is_recheck     = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     total           = Column(BigInteger, nullable=True)
     discovered_num  = Column(BigInteger, nullable=True)
@@ -123,5 +132,17 @@ class MetricURL(Base):
     
     # [新增] 記錄這條 URL 屬於哪個 Shard (Team)，方便除錯
     shard_id = Column(Integer, nullable=True)
+
+    # 經過 w3lib canonicalize_url 的寫法，與 crawler 寫進 url_state_current 的寫法相同
+    url_canonical = Column(Text, nullable=True)
+
+    # 最近一次量測時，從 crawlerdb url_state_current 帶回的欄位 (找不到則為 NULL)
+    first_seen         = Column(DateTime(timezone=True), nullable=True)
+    last_scheduled     = Column(DateTime(timezone=True), nullable=True)
+    source             = Column(SmallInteger, nullable=True)  # 0 自然發現, 1 golden 注入, 2 pageview, 3 patrol
+    robots_bits        = Column(SmallInteger, nullable=True)  # 0 未知, 1 允許, 2 被 robots.txt 禁止
+    last_fail_reason   = Column(Text, nullable=True)
+    num_scheduled_90d  = Column(Integer, nullable=True)
+    num_fetch_fail_90d = Column(Integer, nullable=True)
     
     query = relationship("MetricQuery", back_populates="results")
