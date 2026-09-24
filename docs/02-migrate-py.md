@@ -8,10 +8,8 @@ This is an ETL-style table replication utility, intended for BI/reporting consum
 
 ## 2. Source and Destination URLs
 
-Current hard-coded endpoints:
-
-- Source (`SOURCE_URL`): `postgresql+psycopg2://metric:metric@172.16.191.1:5433/metricdb`
-- Destination (`DEST_URL`): Neon PostgreSQL with `sslmode=require`
+- Source (`SOURCE_URL`, hard-coded): `postgresql+psycopg2://metric:metric@172.16.191.1:5433/metricdb`
+- Destination (`DEST_URL`): read from the `NEON_URL` environment variable (Neon PostgreSQL with `sslmode=require`). The script exits without copying when it is unset. The connection string contains the Neon password, so it must not be committed.
 
 ## 3. Table Scope
 
@@ -28,6 +26,8 @@ Current hard-coded endpoints:
 - `metric_randomset_total`
 
 These are exactly the reporting output tables produced by measurement jobs.
+
+Because destination tables are recreated with `if_exists='replace'`, schema changes on the source (for example the `batch_id` / `measured_at` / `batch_age_days` / `is_recheck` columns on the coverage tables) reach Neon on the next run without manual changes there.
 
 ## 4. Migration Mechanics
 
