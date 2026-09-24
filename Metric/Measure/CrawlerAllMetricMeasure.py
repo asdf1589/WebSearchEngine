@@ -373,8 +373,16 @@ class CrawlerAllMetricMeasure(Measure):
         
         with self.metricDB.session() as session:
             # A. 更新 MetricURL 詳細狀態
-            if bulk_update_mappings:
-                session.bulk_update_mappings(MetricURL, bulk_update_mappings)
+            if not self.is_recheck:
+                if bulk_update_mappings:
+                    session.bulk_update_mappings(MetricURL, bulk_update_mappings)
+            else:
+                # 重量不覆蓋 metric_url 上 t0 的狀態，只補 url_canonical；逐條結果寫進 metric_url_recheck
+                session.bulk_update_mappings(
+                    MetricURL,
+                    [{"id": m["id"], "url_canonical": m["url_canonical"]} for m in bulk_update_mappings],
+                )
+                self._save_recheck_rows(session, bulk_update_mappings, today_date, measured_at, batch_age_days)
             
             # B. 寫入 MetricCoverage 統計表 (Total, A, B)
             suffixes = ["Total", "A", "B"]
@@ -422,6 +430,28 @@ class CrawlerAllMetricMeasure(Measure):
         # 5. 輸出報告
         # ==========================================
         self._print_report(stats, indexed_measured, batch_age_days)
+
+    def _save_recheck_rows(self, session, mappings, stat_date, measured_at, batch_age_days):
+        MetricURLRecheck = self.modelFactory.create_metric_url_recheck()
+        label_keys = ("is_discovered", "is_crawled", "is_indexed", "shard_id") + DETAIL_KEYS
+        rows = [
+            {
+                "metric_url_id": m["id"],
+                "stat_date": stat_date,
+                "batch_age_days": batch_age_days,
+                "measured_at": measured_at,
+                **{k: m[k] for k in label_keys},
+            }
+            for m in mappings
+        ]
+        chunk_size = 2000
+        for i in range(0, len(rows), chunk_size):
+            stmt = insert(MetricURLRecheck).values(rows[i:i + chunk_size])
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['metric_url_id', 'stat_date'],
+                set_={k: stmt.excluded[k] for k in ("batch_age_days", "measured_at") + label_keys},
+            )
+            session.execute(stmt)
 
     def _print_report(self, stats, indexed_measured=True, batch_age_days=None):
         print("\n" + "="*60)

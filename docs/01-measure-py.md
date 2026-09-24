@@ -71,7 +71,7 @@ Flow:
   - Golden URLs are passed through w3lib `canonicalize_url` (the spider's key) before matching; the raw spelling is looked up too, for rows injected before `golden_inject` canonicalized.
   - Queries `selectdb.selected_urls_current` to determine `is_indexed` flag per golden URL.
   - Without `--select_db_url`, or if selectdb fails, `indexed_num` / `indexed_rate` are written as NULL (not measured) and the other columns are still written.
-  - Rows written by a run that also did `--create` have `is_recheck = false` (the t0 measurement); every other run writes `is_recheck = true`.
+  - Rows written by a run that also did `--create` have `is_recheck = false` (the t0 measurement) and update the per-URL labels in `metric_url`. Every other run writes `is_recheck = true` and puts its per-URL labels in `metric_url_recheck`, so the t0 labels are kept.
   - If any `url_state_current_*` shard cannot be scanned, the run aborts without writing coverage, rather than writing an undercount.
 - `rank`: currently no-op in active implementation.
 

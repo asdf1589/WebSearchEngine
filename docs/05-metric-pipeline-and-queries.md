@@ -177,8 +177,29 @@ cron re-measures each batch at 7, 14 and 27 days, so the gap between the t0
 row and the day-27 row shows how much the crawler discovered on its own after
 the queries trended, before `golden_inject` force-injects the batch at 4 weeks.
 After injection, discovered rates of that batch are close to 100% by
-construction; `metric_url.source` / `first_seen` separate injected from
-naturally discovered rows.
+construction; `source` / `first_seen` separate injected from naturally
+discovered rows.
+
+Per-URL state: `metric_url` holds t0, `metric_url_recheck` holds each
+re-measurement (keyed by `metric_url_id, stat_date`). Example, why golden URLs
+were still undiscovered or uncrawled 27 days after the batch was built:
+
+```sql
+SELECT CASE
+         WHEN NOT r.is_discovered THEN 'not discovered'
+         WHEN r.robots_bits = 2 THEN 'robots.txt'
+         WHEN r.last_fail_reason = 'HttpError 403' THEN '403'
+         WHEN r.num_scheduled_90d > 0 AND r.num_fetch_fail_90d = 0 THEN 'scheduled, no result on this row'
+         WHEN r.num_scheduled_90d = 0 THEN 'never scheduled'
+         ELSE coalesce(r.last_fail_reason, 'other')
+       END AS reason,
+       count(*)
+FROM metric_url_recheck r
+JOIN metric_url u ON u.id = r.metric_url_id
+JOIN metric_queries q ON q.id = u.query_id
+WHERE q.batch_id = :batch_id AND r.batch_age_days = 27 AND NOT r.is_crawled
+GROUP BY 1 ORDER BY 2 DESC;
+```
 
 ## 4. UPSERT Write Patterns
 

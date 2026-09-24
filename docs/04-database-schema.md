@@ -79,9 +79,20 @@ Represents keyword-level dataset units.
 - `url_canonical`: `canonicalize_url(url)`, the spelling used to match crawlerdb/selectdb
 - `first_seen`, `last_scheduled`, `source`, `robots_bits`, `last_fail_reason`, `num_scheduled_90d`, `num_fetch_fail_90d`: copied from the matching `url_state_current` row at the latest measurement (NULL if not discovered)
 
-Represents URL-level golden entries and measurement labels. The labels reflect the latest measurement of the batch; the coverage tables keep each measurement.
+Represents URL-level golden entries and measurement labels. The `is_*` labels and the crawler-detail columns are written only by the measurement taken when the golden set is built (t0); re-measurements do not overwrite them (they only fill `url_canonical`).
 
 `is_indexed` is NULL when selectdb was not measured.
+
+### 3.4 `metric_url_recheck`
+
+Per-URL results of re-measurements (`--batch_id`, `--batch_age_days`, or `--test` without `--create`).
+
+- `metric_url_id` (FK -> `metric_url.id`), `stat_date`: PK
+- `batch_age_days`, `measured_at`
+- `is_discovered`, `is_crawled`, `is_indexed`, `shard_id`
+- `first_seen`, `last_scheduled`, `source`, `robots_bits`, `last_fail_reason`, `num_scheduled_90d`, `num_fetch_fail_90d`
+
+With the daily cron, each golden URL has its t0 state in `metric_url` and its day 7 / 14 / 27 states here.
 
 ## 4. Metric Rollup Tables (Dynamic)
 

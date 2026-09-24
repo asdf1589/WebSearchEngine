@@ -1,5 +1,5 @@
 from Database.ModelFactory.DynamicModelFactory import DynamicModelFactory
-from Database.MetricModels import CrawlerStatMixin, MetricCoverageMixin, MetricBatch, MetricQuery, MetricURL
+from Database.MetricModels import CrawlerStatMixin, MetricCoverageMixin, MetricBatch, MetricQuery, MetricURL, MetricURLRecheck
 from Database.CrawlerModels import UrlStateCurrentMixin, ContentFeatureCurrentMixin, DomainState, DomainStatsDaily, SummaryDaily, UrlLink
 
 class AppModelFactory():
@@ -41,6 +41,9 @@ class AppModelFactory():
     
     def create_metric_url(self):
         return MetricURL
+
+    def create_metric_url_recheck(self):
+        return MetricURLRecheck
     
     def create_url_state_current_model(self, idx: int):
         """Dynamically create UrlStateCurrent ORM class for a given shard table."""

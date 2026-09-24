@@ -146,3 +146,29 @@ class MetricURL(Base):
     num_fetch_fail_90d = Column(Integer, nullable=True)
     
     query = relationship("MetricQuery", back_populates="results")
+
+
+# 事後重量 (--batch_id / --batch_age_days / 單獨 --test) 的逐條結果。
+# metric_url 上的 is_* 與細節欄位只由建立 golden set 當下 (t0) 的量測寫入，重量不覆蓋它們，
+# 所以 t0 與第 7、14、27 天的逐條狀態都查得到。
+class MetricURLRecheck(Base):
+    __tablename__ = 'metric_url_recheck'
+
+    metric_url_id = Column(BigInteger, ForeignKey('metric_url.id'), primary_key=True)
+    stat_date     = Column(Date, primary_key=True)
+
+    batch_age_days = Column(Integer, nullable=True)
+    measured_at    = Column(DateTime, nullable=True)
+
+    is_discovered = Column(Boolean, nullable=True)
+    is_crawled    = Column(Boolean, nullable=True)
+    is_indexed    = Column(Boolean, nullable=True)
+    shard_id      = Column(Integer, nullable=True)
+
+    first_seen         = Column(DateTime(timezone=True), nullable=True)
+    last_scheduled     = Column(DateTime(timezone=True), nullable=True)
+    source             = Column(SmallInteger, nullable=True)
+    robots_bits        = Column(SmallInteger, nullable=True)
+    last_fail_reason   = Column(Text, nullable=True)
+    num_scheduled_90d  = Column(Integer, nullable=True)
+    num_fetch_fail_90d = Column(Integer, nullable=True)
