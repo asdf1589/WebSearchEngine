@@ -15,18 +15,24 @@ SOURCE_URL = "postgresql+psycopg2://metric:metric@172.16.191.1:5433/metricdb"
 # (不要加 channel_binding=require，psycopg2 相容性較差；保留 sslmode=require)
 DEST_URL = os.environ.get("NEON_URL")
 
-# 3. 要複製的資料表清單 (共 9 張)
-TABLES_TO_COPY = [
-    "crawler_stat_a",
-    "crawler_stat_b",
-    "crawler_stat_total",
-    "metric_headset_a",
-    "metric_headset_b",
-    "metric_headset_total",
-    "metric_randomset_a",
-    "metric_randomset_b",
-    "metric_randomset_total"
+# 3. 要複製的資料表清單: (Neon 上的表名, 來源 SQL)，共 15 張
+# coverage 表分成兩份：建立 golden set 當天的量測 (NOT is_recheck) 沿用原表名，
+# 事後重量 (is_recheck) 放到 metric_*_recheck_*，Power BI 上的原有圖表不會混入重量的數字。
+COVERAGE_TABLES = [
+    f"metric_{set_type}_{suffix}"
+    for set_type in ("headset", "randomset")
+    for suffix in ("a", "b", "total")
 ]
+
+TABLES_TO_COPY = [
+    ("crawler_stat_a", "SELECT * FROM public.crawler_stat_a"),
+    ("crawler_stat_b", "SELECT * FROM public.crawler_stat_b"),
+    ("crawler_stat_total", "SELECT * FROM public.crawler_stat_total"),
+]
+for table in COVERAGE_TABLES:
+    recheck_table = table.replace("set_", "set_recheck_", 1)  # metric_headset_a -> metric_headset_recheck_a
+    TABLES_TO_COPY.append((table, f"SELECT * FROM public.{table} WHERE NOT is_recheck"))
+    TABLES_TO_COPY.append((recheck_table, f"SELECT * FROM public.{table} WHERE is_recheck"))
 
 def migrate_data():
     print("--- 開始資料遷移工作 ---")
@@ -43,7 +49,7 @@ def migrate_data():
         print(f"連線設定錯誤: {e}")
         return
 
-    for table_name in TABLES_TO_COPY:
+    for table_name, source_sql in TABLES_TO_COPY:
         print(f"\n正在處理資料表: [{table_name}] ...")
         start_time = time.time()
         
@@ -51,7 +57,7 @@ def migrate_data():
             # 1. 從 ws2 讀取資料
             # 使用 chunksize 分批讀取，避免記憶體爆掉 (如果資料量很大的話)
             # 這裡簡單起見直接讀取，若資料超過 100萬筆建議改用 chunk 讀寫
-            df = pd.read_sql(f"SELECT * FROM public.{table_name}", source_engine)
+            df = pd.read_sql(source_sql, source_engine)
             row_count = len(df)
             print(f"  -> 已讀取 {row_count} 筆資料")
 

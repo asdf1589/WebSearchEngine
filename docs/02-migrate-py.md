@@ -13,17 +13,20 @@ This is an ETL-style table replication utility, intended for BI/reporting consum
 
 ## 3. Table Scope
 
-`TABLES_TO_COPY`:
+`TABLES_TO_COPY` is a list of `(destination table, source SELECT)`, 15 entries:
 
-- `crawler_stat_a`
-- `crawler_stat_b`
-- `crawler_stat_total`
-- `metric_headset_a`
-- `metric_headset_b`
-- `metric_headset_total`
-- `metric_randomset_a`
-- `metric_randomset_b`
-- `metric_randomset_total`
+| Destination (Neon) | Source (metricdb) |
+|--------------------|-------------------|
+| `crawler_stat_a` / `_b` / `_total` | same table, all rows |
+| `metric_headset_a` / `_b` / `_total` | same table, `WHERE NOT is_recheck` |
+| `metric_randomset_a` / `_b` / `_total` | same table, `WHERE NOT is_recheck` |
+| `metric_headset_recheck_a` / `_b` / `_total` | `metric_headset_*`, `WHERE is_recheck` |
+| `metric_randomset_recheck_a` / `_b` / `_total` | `metric_randomset_*`, `WHERE is_recheck` |
+
+The coverage tables keep their names on Neon and only carry the measurement
+taken on the day each batch was built (t0), so existing Power BI charts show the
+same series as before. Re-measurements (day 7 / 14 / 27 and manual runs on older
+batches) go to the `*_recheck_*` tables, which have the same columns.
 
 These are exactly the reporting output tables produced by measurement jobs.
 
@@ -35,6 +38,7 @@ For each table:
 
 1. Read all rows with `SELECT * FROM public.<table_name>` into pandas DataFrame.
 2. If row count > 0, write using `DataFrame.to_sql(..., if_exists='replace', index=False, chunksize=1000)`.
+   A `*_recheck_*` table therefore only appears on Neon after the first re-measurement exists.
 3. Continue on exceptions (per-table fault isolation).
 
 ## 5. Behavior Details
