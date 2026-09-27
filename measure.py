@@ -44,6 +44,21 @@ def get_latest_batch_id(db, modelFactory) -> int:
         
         return latest_id
 
+def get_batch_age_days(db, modelFactory, batch_id):
+    """
+    今天距 batch 建立日期的天數 (0 = 今天建立)。找不到 batch 時回傳 None。
+    """
+    MetricBatch = modelFactory.create_metric_batches()
+
+    with db.session() as session:
+        created_at = session.execute(
+            select(MetricBatch.created_at).where(MetricBatch.id == batch_id)
+        ).scalar()
+
+    if created_at is None:
+        return None
+    return (datetime.now().date() - created_at.date()).days
+
 def get_batch_ids_by_age(db, modelFactory, ages) -> list:
     """
     回傳「今天距建立日期剛好 N 天」(N 屬於 ages) 的 batch id，由舊到新。
@@ -120,10 +135,9 @@ def test(args, modelFactory: AppModelFactory, crawlerDB, metricDB, selectDB):
         else:
             batch_ids = [get_latest_batch_id(metricDB, modelFactory)]
 
-        # 只有跟 --create 一起跑、剛建好 golden set 的那次量測算 t0，其他都是事後重量
-        is_recheck = not args.create
-
         for batch_id in batch_ids:
+            # 量的是今天建立的 batch 算 t0，其他都是事後重量 (與是否帶 --create 無關)
+            is_recheck = get_batch_age_days(metricDB, modelFactory, batch_id) != 0
             for tag in args.strategy:
                 context.setMeasure(CrawlerAllMetricMeasure(modelFactory, crawlerDB, metricDB, selectDB, batch_id, tag, is_recheck))
                 context.test()

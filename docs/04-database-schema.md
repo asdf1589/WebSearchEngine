@@ -124,7 +124,7 @@ Shared schema from `MetricCoverageMixin`:
 - `batch_id`: the `metric_batches.id` that was measured
 - `measured_at`: timestamp of the measurement (NULL on rows written before this column existed)
 - `batch_age_days`: `stat_date` minus the batch's creation date
-- `is_recheck`: false for the measurement taken right after the golden set was built (`--create --test`), true for later re-measurements
+- `is_recheck`: false when the measured batch was created that day (`batch_age_days = 0`, the t0 measurement), true for any older batch. Rows written before this column existed default to false.
 - `indexed_num`, `indexed_rate` (NULL when selectdb was not measured)
 - `ranked_num`, `ranked_rate` (not implemented; NULL)
 

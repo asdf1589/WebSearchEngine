@@ -43,7 +43,7 @@ It coordinates three layers:
     - `metric_headset_total`, `metric_headset_a`, `metric_headset_b`
     - `metric_randomset_total`, `metric_randomset_a`, `metric_randomset_b`
   - Calls `createDB(..., createTable=True, base=MetricBase)` for metric DB.
-  - Calls `Database/migrations.py:migrate_metric_db()`. `create_all` never alters an existing table, so this adds the new columns to existing tables: `batch_id` / `measured_at` / `batch_age_days` / `is_recheck` on the six coverage tables (primary key becomes `(batch_id, stat_date)`, old rows get the latest batch created on or before their `stat_date`), and the `url_canonical` + crawler-detail columns on `metric_url`. On the first upgrade it also turns never-measured zeros into NULL (`indexed_*` before selectdb was wired in, all `ranked_*`, `crawler_stat_*.indexed`). Safe to re-run; the container runs it on every start (`entrypoint.sh`).
+  - Calls `Database/migrations.py:migrate_metric_db()`. `create_all` never alters an existing table, so this adds the new columns to existing tables: `batch_id` / `measured_at` / `batch_age_days` / `is_recheck` on the six coverage tables (primary key becomes `(batch_id, stat_date)`, old rows get the latest batch created on or before their `stat_date`), and the `url_canonical` + crawler-detail columns on `metric_url`. On the first upgrade it also turns never-measured zeros into NULL (`indexed_*` before selectdb was wired in, all `ranked_*`, `crawler_stat_*.indexed`). Safe to re-run; the container runs it on every start (`entrypoint.sh`) and exits without starting cron if it fails.
 
 ### 3.2 Dataset creation mode (`--create`)
 
@@ -71,7 +71,7 @@ Flow:
   - Golden URLs are passed through w3lib `canonicalize_url` (the spider's key) before matching; the raw spelling is looked up too, for rows injected before `golden_inject` canonicalized.
   - Queries `selectdb.selected_urls_current` to determine `is_indexed` flag per golden URL.
   - Without `--select_db_url`, or if selectdb fails, `indexed_num` / `indexed_rate` are written as NULL (not measured) and the other columns are still written.
-  - Rows written by a run that also did `--create` have `is_recheck = false` (the t0 measurement) and update the per-URL labels in `metric_url`. Every other run writes `is_recheck = true` and puts its per-URL labels in `metric_url_recheck`, so the t0 labels are kept.
+  - `is_recheck` is decided per batch from its age, not from `--create`: a batch created today (`batch_age_days = 0`) is the t0 measurement (`is_recheck = false`) and updates the per-URL labels in `metric_url`. Measuring any older batch writes `is_recheck = true` and puts its per-URL labels in `metric_url_recheck`, so the t0 labels are kept. A manual `--test` on the day a batch was built therefore also counts as t0 and overwrites that day's t0 row.
   - If any `url_state_current_*` shard cannot be scanned, the run aborts without writing coverage, rather than writing an undercount.
 - `rank`: currently no-op in active implementation.
 

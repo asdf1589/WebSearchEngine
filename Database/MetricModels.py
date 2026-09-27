@@ -61,8 +61,8 @@ class MetricCoverageMixin:
     measured_at    = Column(DateTime, nullable=True)
     # stat_date 與 batch 建立日期相差幾天 (0 = 建立當天)
     batch_age_days = Column(Integer, nullable=True)
-    # False: 由 --create --test 在建立 golden set 當下量的 (t0)
-    # True : 之後重量的 (--batch_id / --batch_age_days / 單獨 --test)
+    # False: 量的 batch 是當天建立的 (t0)
+    # True : 量的 batch 是之前建立的 (事後重量)
     is_recheck     = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     total           = Column(BigInteger, nullable=True)
@@ -148,7 +148,7 @@ class MetricURL(Base):
     query = relationship("MetricQuery", back_populates="results")
 
 
-# 事後重量 (--batch_id / --batch_age_days / 單獨 --test) 的逐條結果。
+# 事後重量 (量的 batch 不是當天建立的) 的逐條結果。
 # metric_url 上的 is_* 與細節欄位只由建立 golden set 當下 (t0) 的量測寫入，重量不覆蓋它們，
 # 所以 t0 與第 7、14、27 天的逐條狀態都查得到。
 class MetricURLRecheck(Base):

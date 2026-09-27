@@ -172,7 +172,7 @@ For each group `G in {Total, A, B}`:
 `ranked_*` is not implemented and written as NULL. `indexed_*` is NULL when not measured.
 
 Each coverage row also records `batch_id`, `measured_at`, `batch_age_days` and
-`is_recheck` (false only for the run that built the golden set). The daily
+`is_recheck` (false only when the batch was created that day). The daily
 cron re-measures each batch at 7, 14 and 27 days, so the gap between the t0
 row and the day-27 row shows how much the crawler discovered on its own after
 the queries trended, before `golden_inject` force-injects the batch at 4 weeks.

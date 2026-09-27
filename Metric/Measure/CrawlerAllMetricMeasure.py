@@ -45,7 +45,7 @@ class CrawlerAllMetricMeasure(Measure):
         :param selectDB: 選址資料庫 (查詢 selected_urls_current)
         :param batch_id: 指定要評估的 MetricBatch ID
         :param tag: 指定 Metric 標籤 (例如 'head', 'random')，用來篩選 Golden URLs
-        :param is_recheck: False 表示這是建立 golden set 當下的量測 (t0)，True 表示事後重量
+        :param is_recheck: False 表示量的是當天建立的 batch (t0)，True 表示事後重量
         """
         super().__init__()
         self.modelFactory = modelFactory
