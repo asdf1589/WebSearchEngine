@@ -48,7 +48,7 @@ All cron outputs append to `/var/log/cron.log`.
 
 Container command: `entrypoint.sh`
 
-1. `measure.py --createtable --metric_db_url ...` upgrades the metricdb schema (idempotent).
+1. `measure.py --createtable --metric_db_url ...` upgrades the metricdb schema (idempotent). If it fails (metricdb unreachable, migration error), the script prints the last lines of `/var/log/cron.log` to stderr (visible in `docker logs`) and exits 1; cron is not started, so no job runs against an old schema. With a restart policy, the container keeps retrying until the upgrade succeeds.
 2. Writes `NEON_URL` into `/etc/environment` when set.
 3. `cron && tail -f /var/log/cron.log` keeps cron active and the container alive via log tailing.
 
