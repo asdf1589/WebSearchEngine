@@ -145,6 +145,21 @@ def _clear_unmeasured_values(conn):
             print(f"[migrate] {table}: ranked -> NULL on {n} row(s)")
 
 
+def _reclassify_legacy_recheck(conn, table):
+    """
+    舊列 (measured_at IS NULL，這次升級前寫入的) 依 measure.py 現在的規則重新判斷 is_recheck：
+    batch 當天建立 (batch_age_days = 0) 為 t0，其他為重量；batch_age_days 是 NULL 的維持 false。
+    只改值不同的列，所以可以重複執行，第二次起改動數為 0。
+    """
+    n = conn.execute(text(f"""
+        UPDATE {table}
+        SET is_recheck = COALESCE(batch_age_days <> 0, false)
+        WHERE measured_at IS NULL
+          AND is_recheck IS DISTINCT FROM COALESCE(batch_age_days <> 0, false)
+    """)).rowcount
+    print(f"[migrate] {table}: legacy is_recheck reclassified on {n} row(s)")
+
+
 def migrate_metric_db(db):
     with db.engine.begin() as conn:
         if _table_exists(conn, "metric_url"):
@@ -155,6 +170,7 @@ def migrate_metric_db(db):
         for table in COVERAGE_TABLES:
             if _table_exists(conn, table):
                 first_time = _migrate_coverage_table(conn, table) or first_time
+                _reclassify_legacy_recheck(conn, table)
 
         if first_time:
             _clear_unmeasured_values(conn)
