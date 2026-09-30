@@ -10,12 +10,5 @@ if ! (cd /root/WebSearchEngine && /root/system-venv/bin/python3 measure.py --cre
     exit 1
 fi
 
-# 2. cron 不會繼承 docker run -e 傳入的環境變數，寫進 /etc/environment 讓 migrate.py 讀得到
-if [ -n "$NEON_URL" ]; then
-    grep -v '^NEON_URL=' /etc/environment > /etc/environment.tmp 2>/dev/null
-    echo "NEON_URL=$NEON_URL" >> /etc/environment.tmp
-    cat /etc/environment.tmp > /etc/environment && rm -f /etc/environment.tmp
-fi
-
-# 3. 啟動 cron 並持續輸出日誌，防止容器停止
+# 2. 啟動 cron 並持續輸出日誌，防止容器停止
 cron && exec tail -f /var/log/cron.log

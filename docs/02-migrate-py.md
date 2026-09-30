@@ -9,7 +9,7 @@ This is an ETL-style table replication utility, intended for BI/reporting consum
 ## 2. Source and Destination URLs
 
 - Source (`SOURCE_URL`, hard-coded): `postgresql+psycopg2://metric:metric@172.16.191.1:5433/metricdb`
-- Destination (`DEST_URL`): read from the `NEON_URL` environment variable (Neon PostgreSQL with `sslmode=require`). The script exits without copying when it is unset. The connection string contains the Neon password, so it must not be committed.
+- Destination (`DEST_URL`, hard-coded): Neon PostgreSQL with `sslmode=require`
 
 ## 3. Table Scope
 

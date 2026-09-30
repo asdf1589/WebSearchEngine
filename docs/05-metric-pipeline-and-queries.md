@@ -248,7 +248,7 @@ Cron defaults in Dockerfile currently use:
 
 ### 5.3 Migration target URL
 
-`migrate.py` writes to the Neon PostgreSQL URL given in the `NEON_URL` environment variable (SSL required).
+`migrate.py` writes to Neon PostgreSQL URL with SSL requirement.
 
 ## 6. Important Current Limitations
 

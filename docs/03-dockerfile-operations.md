@@ -20,7 +20,6 @@ Project layout in container:
 
 - `SERPAPI_KEY` is expected as environment variable.
 - Dockerfile currently includes placeholder default value and exports into `/etc/environment` for cron visibility.
-- `NEON_URL` (Neon connection string for `migrate.py`) is passed at `docker run -e NEON_URL=...`; `entrypoint.sh` copies it into `/etc/environment` so cron jobs see it. It is never baked into the image or the repo.
 
 ## 3. Scheduled Jobs (Cron)
 
@@ -49,8 +48,7 @@ All cron outputs append to `/var/log/cron.log`.
 Container command: `entrypoint.sh`
 
 1. `measure.py --createtable --metric_db_url ...` upgrades the metricdb schema (idempotent). If it fails (metricdb unreachable, migration error), the script prints the last lines of `/var/log/cron.log` to stderr (visible in `docker logs`) and exits 1; cron is not started, so no job runs against an old schema. With a restart policy, the container keeps retrying until the upgrade succeeds.
-2. Writes `NEON_URL` into `/etc/environment` when set.
-3. `cron && tail -f /var/log/cron.log` keeps cron active and the container alive via log tailing.
+2. `cron && tail -f /var/log/cron.log` keeps cron active and the container alive via log tailing.
 
 ## 5. Supporting Compose Service
 

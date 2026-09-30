@@ -48,6 +48,6 @@ RUN chmod 0644 /etc/cron.d/search-engine-cron && crontab /etc/cron.d/search-engi
 # 建立日誌檔案以便查看
 RUN touch /var/log/cron.log
 
-# 啟動時先升級 metricdb schema (失敗則容器結束、不啟動 cron)，把 NEON_URL 交給 cron，再啟動 cron 並持續輸出日誌
+# 啟動時先升級 metricdb schema (失敗則容器結束、不啟動 cron)，再啟動 cron 並持續輸出日誌
 RUN chmod +x /root/WebSearchEngine/entrypoint.sh
 CMD ["/root/WebSearchEngine/entrypoint.sh"]
