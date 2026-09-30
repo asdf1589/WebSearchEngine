@@ -12,7 +12,7 @@ existing Power BI panels plus a new request-effectiveness chart.
 | Crawled (Daily / Weekly / Monthly) | `crawler_stat_total`: `fetch_ok` / `fetch_ok_7` / `fetch_ok_30` |
 | HeadSet Coverage | `metric_headset_total`: discovered/crawled/indexed rate (%), initial measurement rows only (`NOT is_recheck`) |
 | RandomSet Coverage | `metric_randomset_total`: discovered/crawled/indexed rate (%), initial measurement rows only |
-| HeadSet Discovery by Batch Age | `metric_headset_total` joined to `metric_batches`: one line per age (day 00 / 07 / 14 / 27), x = batch creation date |
+| HeadSet Discovery by Batch Age | `metric_headset_total` joined to `metric_batches`: one line per age (day 00 / 07 / 14 / 27), x = batch creation date. `day 00` is the initial measurement (`NOT is_recheck`, possibly taken 1–2 days after creation); the others are re-measurements at that age |
 | RandomSet Discovery by Batch Age | same for `metric_randomset_total` |
 | Request Effectiveness (Daily) | `crawler_stat_total`: `fetch_ok / fetch_total` per day (%) |
 | Request Sent | `crawler_stat_total`: `fetch_total` / `fetch_ok` / `fetch_fail` per day |

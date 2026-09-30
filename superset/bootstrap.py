@@ -57,21 +57,27 @@ DATASETS = {
         "SELECT stat_date, discovered_rate, crawled_rate, indexed_rate\n"
         "FROM metric_randomset_total WHERE NOT is_recheck ORDER BY stat_date"
     ),
-    # One line per batch age: how much of each batch was discovered on the day
-    # it was built and 7 / 14 / 27 days later (before golden_inject at 4 weeks).
+    # One line per batch age: how much of each batch was discovered at its
+    # initial measurement and 7 / 14 / 27 days later (before golden_inject at
+    # 4 weeks). "day 00" is the initial measurement (is_recheck = false), which
+    # may have been taken 1 or 2 days after the batch was built.
     "vw_headset_coverage_by_age": (
         "SELECT CAST(b.created_at AS date) AS batch_date,\n"
-        "       'day ' || lpad(c.batch_age_days::text, 2, '0') AS measured,\n"
+        "       CASE WHEN NOT c.is_recheck THEN 'day 00'\n"
+        "            ELSE 'day ' || lpad(c.batch_age_days::text, 2, '0') END AS measured,\n"
         "       c.discovered_rate, c.crawled_rate\n"
         "FROM metric_headset_total c JOIN metric_batches b ON b.id = c.batch_id\n"
-        "WHERE c.batch_age_days IN (0, 7, 14, 27) ORDER BY batch_date"
+        "WHERE NOT c.is_recheck OR (c.is_recheck AND c.batch_age_days IN (7, 14, 27))\n"
+        "ORDER BY batch_date"
     ),
     "vw_randomset_coverage_by_age": (
         "SELECT CAST(b.created_at AS date) AS batch_date,\n"
-        "       'day ' || lpad(c.batch_age_days::text, 2, '0') AS measured,\n"
+        "       CASE WHEN NOT c.is_recheck THEN 'day 00'\n"
+        "            ELSE 'day ' || lpad(c.batch_age_days::text, 2, '0') END AS measured,\n"
         "       c.discovered_rate, c.crawled_rate\n"
         "FROM metric_randomset_total c JOIN metric_batches b ON b.id = c.batch_id\n"
-        "WHERE c.batch_age_days IN (0, 7, 14, 27) ORDER BY batch_date"
+        "WHERE NOT c.is_recheck OR (c.is_recheck AND c.batch_age_days IN (7, 14, 27))\n"
+        "ORDER BY batch_date"
     ),
     "vw_request_sent": (
         "SELECT stat_date, fetch_total, fetch_ok, fetch_fail\n"
