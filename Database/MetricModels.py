@@ -6,6 +6,10 @@ from datetime import datetime
 # 建立 Base
 Base = declarative_base()
 
+# 同一個 batch、同一個 tag，batch 建立後這麼多天內的第一次量測是「建立當日量測」(is_recheck = false)，
+# 其餘都是重量。留 2 天是因為建立當天的量測可能失敗，要能隔天補量。
+INITIAL_MEASURE_MAX_AGE_DAYS = 2
+
 # ==========================================
 # 1. 定義 Mixin: Crawler Stat (爬蟲統計)
 # ==========================================
@@ -61,8 +65,8 @@ class MetricCoverageMixin:
     measured_at    = Column(DateTime, nullable=True)
     # stat_date 與 batch 建立日期相差幾天 (0 = 建立當天)
     batch_age_days = Column(Integer, nullable=True)
-    # False: 量的 batch 是當天建立的 (t0)
-    # True : 量的 batch 是之前建立的 (事後重量)
+    # False: 建立當日量測 (batch 建立後 INITIAL_MEASURE_MAX_AGE_DAYS 天內，這個 tag 的第一次量測)
+    # True : 事後重量
     is_recheck     = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     total           = Column(BigInteger, nullable=True)
@@ -148,9 +152,9 @@ class MetricURL(Base):
     query = relationship("MetricQuery", back_populates="results")
 
 
-# 事後重量 (量的 batch 不是當天建立的) 的逐條結果。
-# metric_url 上的 is_* 與細節欄位只由建立 golden set 當下 (t0) 的量測寫入，重量不覆蓋它們，
-# 所以 t0 與第 7、14、27 天的逐條狀態都查得到。
+# 事後重量的逐條結果。
+# metric_url 上的 is_* 與細節欄位只由建立當日量測寫入，重量不覆蓋它們，
+# 所以建立當日與第 7、14、27 天的逐條狀態都查得到。
 class MetricURLRecheck(Base):
     __tablename__ = 'metric_url_recheck'
 

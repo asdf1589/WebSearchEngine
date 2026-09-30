@@ -1,5 +1,7 @@
 from Metric.Measure.Measure import Measure
+from Metric.errors import MeasureError
 from Database.Database import Database
+from Database.MetricModels import INITIAL_MEASURE_MAX_AGE_DAYS
 from Database.ModelFactory.AppModelFactory import AppModelFactory
 from sqlalchemy import select, and_, text
 from sqlalchemy.dialects.postgresql import insert
@@ -9,6 +11,7 @@ from urllib.parse import urlparse
 from w3lib.url import canonicalize_url
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+import time
 
 
 def to_canonical(url: str) -> str:
@@ -36,7 +39,11 @@ DETAIL_KEYS = (
 
 
 class CrawlerAllMetricMeasure(Measure):
-    def __init__(self, modelFactory: AppModelFactory, crawlerDB: Database, metricDB: Database, selectDB: Database, batch_id: int, tag: str, is_recheck: bool = False):
+    # url_state_current 掃描失敗的 shard 重試幾次、每次間隔幾秒 (大 shard 常發生 TCP timeout)
+    SHARD_RETRIES = 3
+    SHARD_RETRY_DELAY_SEC = 30
+
+    def __init__(self, modelFactory: AppModelFactory, crawlerDB: Database, metricDB: Database, selectDB: Database, batch_id: int, tag: str):
         """
         初始化 CrawlerAllMetricMeasure
         :param modelFactory: 模型工廠
@@ -45,7 +52,7 @@ class CrawlerAllMetricMeasure(Measure):
         :param selectDB: 選址資料庫 (查詢 selected_urls_current)
         :param batch_id: 指定要評估的 MetricBatch ID
         :param tag: 指定 Metric 標籤 (例如 'head', 'random')，用來篩選 Golden URLs
-        :param is_recheck: False 表示量的是當天建立的 batch (t0)，True 表示事後重量
+        是建立當日量測還是重量 (is_recheck) 由 test() 依 coverage 表既有的列判斷，見 _decide_is_recheck。
         """
         super().__init__()
         self.modelFactory = modelFactory
@@ -54,7 +61,7 @@ class CrawlerAllMetricMeasure(Measure):
         self.selectDB: Database = selectDB
         self.batch_id = batch_id
         self.tag = tag
-        self.is_recheck = is_recheck
+        self.is_recheck = None
         
         # 初始化 TLD Extractor (關閉快取避免權限問題)
         self.extractor = tldextract.TLDExtract(cache_dir=False)
@@ -151,11 +158,35 @@ class CrawlerAllMetricMeasure(Measure):
                         rec["shard_id"] = i
                         found_data.append(rec)
                 except Exception as e:
-                    # 失敗後 transaction 會停在 aborted 狀態，不 rollback 的話後面的 shard 也會全部失敗
-                    session.rollback()
+                    # 失敗的連線可能已經斷掉 (TCP timeout)，也可能停在 aborted transaction，
+                    # 直接丟掉：後面的 shard 與重試都會拿一條新的連線
+                    session.invalidate()
                     failed_shards.append(i)
                     print(f"[Error] scan url_state_current_{i:03d} failed: {e}")
         return found_data, failed_shards
+
+    @staticmethod
+    def _merge_scan_rows(rows, url_status_map, lookup_to_canonical):
+        for row in rows:
+            url = lookup_to_canonical.get(row['url'])
+            if url is None:
+                continue
+            s = url_status_map[url]
+            first_hit = not s['discovered']
+            earliest = min(
+                (t for t in (s['first_seen'], row['first_seen']) if t is not None),
+                default=None,
+            )
+            s['discovered'] = True
+            # 同一條 URL 可能在多個 shard 各有一列 (reshard / subdomain 拆分之後)，
+            # 也可能同時有原始寫法與正規化寫法兩列：任一列抓過就算 crawled，
+            # 其餘欄位以抓過的那一列為準，不能讓後掃到的列蓋掉。
+            if first_hit or (row['crawled'] and not s['crawled']):
+                s['shard_id'] = row['shard_id']
+                for k in DETAIL_KEYS:
+                    s[k] = row[k]
+            s['crawled'] = s['crawled'] or row['crawled']
+            s['first_seen'] = earliest
 
     def _get_batch_age_days(self):
         MetricBatch = self.modelFactory.create_metric_batches()
@@ -167,17 +198,38 @@ class CrawlerAllMetricMeasure(Measure):
             return None
         return (datetime.now().date() - created_at.date()).days
 
+    def _decide_is_recheck(self, set_type, batch_age_days, today_date):
+        """
+        同一個 batch、同一個 tag，batch 建立後 INITIAL_MEASURE_MAX_AGE_DAYS 天內的第一次量測是建立當日量測，其餘都是重量：
+          - 這個 tag 的 _total 表還沒有這個 batch 的 is_recheck = false 列：batch_age_days 在期限內就是建立當日量測
+          - 已經有，而且那一列就是今天 (同一天重跑)：仍是建立當日量測，覆蓋那一列
+          - 其餘都是重量
+        """
+        TotalModel = self.modelFactory.create_metric_coverage_model(set_type, "Total")
+        with self.metricDB.session() as session:
+            initial_dates = session.execute(
+                select(TotalModel.stat_date).where(
+                    TotalModel.batch_id == self.batch_id,
+                    TotalModel.is_recheck.is_(False),
+                )
+            ).scalars().all()
+
+        if not initial_dates:
+            return not (batch_age_days is not None and batch_age_days <= INITIAL_MEASURE_MAX_AGE_DAYS)
+        return today_date not in initial_dates
+
     def test(self):
         """
         主執行邏輯 (使用 __init__ 傳入的 batch_id 和 tag)
         """
-        print(f'🚀 Start Measuring Crawler Coverage (Batch: {self.batch_id}, Tag: {self.tag}, Recheck: {self.is_recheck})')
         measured_at = datetime.now()
         today_date = measured_at.date()
         batch_age_days = self._get_batch_age_days()
-        
+
         # 對應 MetricCoverage 的 Set Type (例如 "head" -> "HeadSet")
         set_type = f"{self.tag.capitalize()}Set"
+        self.is_recheck = self._decide_is_recheck(set_type, batch_age_days, today_date)
+        print(f'🚀 Start Measuring Crawler Coverage (Batch: {self.batch_id}, Tag: {self.tag}, Age: {batch_age_days}, Recheck: {self.is_recheck})')
 
         # ==========================================
         # 1. 從 MetricDB 讀取 Golden URLs
@@ -211,8 +263,11 @@ class CrawlerAllMetricMeasure(Measure):
             results = session.execute(stmt).scalars().all()
             
             if not results:
-                print(f"⚠️ No URLs found for Batch {self.batch_id} with tag '{self.tag}'. Exiting.")
-                return
+                # 沒有 golden URL 代表這個 batch 的 golden set 沒收集到 (例如 SerpApi 失敗)，不是覆蓋率 0
+                raise MeasureError(
+                    f"No golden URLs for batch {self.batch_id} with tag '{self.tag}'; "
+                    f"the golden set of this batch was not collected. Coverage not written."
+                )
 
             for m_url in results:
                 raw_url = m_url.url
@@ -265,32 +320,24 @@ class CrawlerAllMetricMeasure(Measure):
             for future in tqdm(as_completed(futures), total=len(futures), desc="URLs"):
                 rows, failed = future.result()
                 failed_shards.extend(failed)
-                for row in rows:
-                    url = lookup_to_canonical.get(row['url'])
-                    if url is None:
-                        continue
-                    s = url_status_map[url]
-                    first_hit = not s['discovered']
-                    earliest = min(
-                        (t for t in (s['first_seen'], row['first_seen']) if t is not None),
-                        default=None,
-                    )
-                    s['discovered'] = True
-                    # 同一條 URL 可能在多個 shard 各有一列 (reshard / subdomain 拆分之後)，
-                    # 也可能同時有原始寫法與正規化寫法兩列：任一列抓過就算 crawled，
-                    # 其餘欄位以抓過的那一列為準，不能讓後掃到的列蓋掉。
-                    if first_hit or (row['crawled'] and not s['crawled']):
-                        s['shard_id'] = row['shard_id']
-                        for k in DETAIL_KEYS:
-                            s[k] = row[k]
-                    s['crawled'] = s['crawled'] or row['crawled']
-                    s['first_seen'] = earliest
+                self._merge_scan_rows(rows, url_status_map, lookup_to_canonical)
+
+        # 失敗的 shard 間隔一段時間後用新的連線重掃 (合併是 OR / 取最早時間，重掃不會重複計算)
+        for attempt in range(1, self.SHARD_RETRIES + 1):
+            if not failed_shards:
+                break
+            print(f"🔁 Retry {attempt}/{self.SHARD_RETRIES}: shard(s) {sorted(failed_shards)} failed, "
+                  f"rescanning in {self.SHARD_RETRY_DELAY_SEC}s with new connections...")
+            time.sleep(self.SHARD_RETRY_DELAY_SEC)
+            rows, failed_shards = self._scan_url_shard(sorted(failed_shards), lookup_tuple)
+            self._merge_scan_rows(rows, url_status_map, lookup_to_canonical)
 
         if failed_shards:
             # 少掃到的 shard 會讓 discovered / crawled 偏低，寫進報表會被當成真的下降，所以直接中止
-            raise RuntimeError(
-                f"url_state_current scan failed on {len(failed_shards)} shard(s): "
-                f"{sorted(failed_shards)[:20]}; coverage not written"
+            raise MeasureError(
+                f"url_state_current scan still failed on shard(s) "
+                f"{', '.join(f'{i:03d}' for i in sorted(failed_shards))} after {self.SHARD_RETRIES} retries; "
+                f"coverage not written"
             )
 
         # 查詢 SelectDB 取得 indexed 狀態。沒有 SelectDB 或查詢失敗時 indexed 記為 NULL (沒量到)，而不是 0。
@@ -377,7 +424,7 @@ class CrawlerAllMetricMeasure(Measure):
                 if bulk_update_mappings:
                     session.bulk_update_mappings(MetricURL, bulk_update_mappings)
             else:
-                # 重量不覆蓋 metric_url 上 t0 的狀態，只補 url_canonical；逐條結果寫進 metric_url_recheck
+                # 重量不覆蓋 metric_url 上建立當日量測的狀態，只補 url_canonical；逐條結果寫進 metric_url_recheck
                 session.bulk_update_mappings(
                     MetricURL,
                     [{"id": m["id"], "url_canonical": m["url_canonical"]} for m in bulk_update_mappings],

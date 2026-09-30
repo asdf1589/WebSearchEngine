@@ -3,11 +3,16 @@ metricdb 的 schema 升級。
 
 `create_all` 只會建立不存在的表，不會改已經存在的表，所以既有的表要靠這裡補欄位。
 每一步都可以重複執行：已經升級過的表不會再被改動。
+改資料的步驟 (舊列重新分類 is_recheck、把沒量過的 0 改成 NULL) 只在第一次升級時做一次
+(以 coverage 表的 batch_id 欄位是不是這次才新增來判斷)，之後容器重啟不再重做，
+上線時手動修正的標記不會被蓋掉。
 
 執行方式 (容器啟動時會自動跑一次，見 entrypoint.sh)：
     python3 measure.py --createtable --metric_db_url 172.16.191.1:5433
 """
 from sqlalchemy import text
+
+from Database.MetricModels import INITIAL_MEASURE_MAX_AGE_DAYS
 
 SET_TYPES = ("headset", "randomset")
 SUFFIXES = ("total", "a", "b")
@@ -145,19 +150,30 @@ def _clear_unmeasured_values(conn):
             print(f"[migrate] {table}: ranked -> NULL on {n} row(s)")
 
 
-def _reclassify_legacy_recheck(conn, table):
+def _classify_legacy_recheck(conn, table):
     """
-    舊列 (measured_at IS NULL，這次升級前寫入的) 依 measure.py 現在的規則重新判斷 is_recheck：
-    batch 當天建立 (batch_age_days = 0) 為 t0，其他為重量；batch_age_days 是 NULL 的維持 false。
-    只改值不同的列，所以可以重複執行，第二次起改動數為 0。
+    舊列 (measured_at IS NULL，這次升級前寫入的) 依新規則判斷 is_recheck：
+    同一張表、同一個 batch 裡，batch_age_days <= INITIAL_MEASURE_MAX_AGE_DAYS 且 stat_date 最早的那一列
+    是建立當日量測 (false)，其餘都是重量 (true)，batch_age_days 是 NULL 的也算重量。
+    只在這張表第一次升級時呼叫。
     """
-    n = conn.execute(text(f"""
-        UPDATE {table}
-        SET is_recheck = COALESCE(batch_age_days <> 0, false)
-        WHERE measured_at IS NULL
-          AND is_recheck IS DISTINCT FROM COALESCE(batch_age_days <> 0, false)
-    """)).rowcount
-    print(f"[migrate] {table}: legacy is_recheck reclassified on {n} row(s)")
+    conn.execute(text(f"""
+        UPDATE {table} c
+        SET is_recheck = (f.initial_date IS NULL OR c.stat_date <> f.initial_date)
+        FROM (
+            SELECT batch_id,
+                   min(stat_date) FILTER (WHERE batch_age_days <= :max_age) AS initial_date
+            FROM {table}
+            WHERE measured_at IS NULL
+            GROUP BY batch_id
+        ) f
+        WHERE c.batch_id = f.batch_id AND c.measured_at IS NULL
+    """), {"max_age": INITIAL_MEASURE_MAX_AGE_DAYS})
+    initial, recheck = conn.execute(text(
+        f"SELECT count(*) FILTER (WHERE NOT is_recheck), count(*) FILTER (WHERE is_recheck) "
+        f"FROM {table} WHERE measured_at IS NULL"
+    )).one()
+    print(f"[migrate] {table}: legacy rows classified, {initial} initial measurement(s), {recheck} re-measurement(s)")
 
 
 def migrate_metric_db(db):
@@ -169,8 +185,10 @@ def migrate_metric_db(db):
         first_time = False
         for table in COVERAGE_TABLES:
             if _table_exists(conn, table):
-                first_time = _migrate_coverage_table(conn, table) or first_time
-                _reclassify_legacy_recheck(conn, table)
+                table_first_time = _migrate_coverage_table(conn, table)
+                if table_first_time:
+                    _classify_legacy_recheck(conn, table)
+                first_time = table_first_time or first_time
 
         if first_time:
             _clear_unmeasured_values(conn)

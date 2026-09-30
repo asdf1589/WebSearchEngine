@@ -79,20 +79,20 @@ Represents keyword-level dataset units.
 - `url_canonical`: `canonicalize_url(url)`, the spelling used to match crawlerdb/selectdb
 - `first_seen`, `last_scheduled`, `source`, `robots_bits`, `last_fail_reason`, `num_scheduled_90d`, `num_fetch_fail_90d`: copied from the matching `url_state_current` row at the latest measurement (NULL if not discovered)
 
-Represents URL-level golden entries and measurement labels. The `is_*` labels and the crawler-detail columns are written only by the measurement taken when the golden set is built (t0); re-measurements do not overwrite them (they only fill `url_canonical`).
+Represents URL-level golden entries and measurement labels. The `is_*` labels and the crawler-detail columns are written only by the initial measurement of the batch (`is_recheck = false`, see 4.2); re-measurements do not overwrite them (they only fill `url_canonical`).
 
 `is_indexed` is NULL when selectdb was not measured.
 
 ### 3.4 `metric_url_recheck`
 
-Per-URL results of re-measurements (`--batch_id`, `--batch_age_days`, or `--test` without `--create`).
+Per-URL results of re-measurements (`is_recheck = true`, see 4.2), whether they come from `--batch_id`, `--batch_age_days` or a plain `--test`.
 
 - `metric_url_id` (FK -> `metric_url.id`), `stat_date`: PK
 - `batch_age_days`, `measured_at`
 - `is_discovered`, `is_crawled`, `is_indexed`, `shard_id`
 - `first_seen`, `last_scheduled`, `source`, `robots_bits`, `last_fail_reason`, `num_scheduled_90d`, `num_fetch_fail_90d`
 
-With the daily cron, each golden URL has its t0 state in `metric_url` and its day 7 / 14 / 27 states here.
+With the daily cron, each golden URL has its initial-measurement state in `metric_url` and its day 7 / 14 / 27 states here.
 
 ## 4. Metric Rollup Tables (Dynamic)
 
@@ -124,7 +124,7 @@ Shared schema from `MetricCoverageMixin`:
 - `batch_id`: the `metric_batches.id` that was measured
 - `measured_at`: timestamp of the measurement (NULL on rows written before this column existed)
 - `batch_age_days`: `stat_date` minus the batch's creation date
-- `is_recheck`: false when the measured batch was created that day (`batch_age_days = 0`, the t0 measurement), true for any older batch. Rows written before the upgrade (`measured_at IS NULL`) are set by the same rule in `Database/migrations.py`; those whose `batch_age_days` is NULL (older than every batch) stay false.
+- `is_recheck`: false for the initial measurement of the batch, true for re-measurements. For one batch and one tag, the initial measurement is the first measurement within 2 days of the batch's creation (`batch_age_days <= 2`); a rerun on that same day stays initial and overwrites the row. `CrawlerAllMetricMeasure` decides it from the `is_recheck = false` row already in the tag's `_total` table. Rows written before the upgrade (`measured_at IS NULL`) are classified once, on the first upgrade (`Database/migrations.py`): per table and per `batch_id`, the row with the earliest `stat_date` among those with `batch_age_days <= 2` is initial; every other row is a re-measurement, including rows whose `batch_age_days` is NULL.
 - `indexed_num`, `indexed_rate` (NULL when selectdb was not measured)
 - `ranked_num`, `ranked_rate` (not implemented; NULL)
 

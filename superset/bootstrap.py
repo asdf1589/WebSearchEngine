@@ -26,8 +26,8 @@ METRIC_DB_URI = (
 )
 
 # --- virtual datasets: name -> SQL -------------------------------------------
-# Coverage main lines only use the measurement taken when the golden set was
-# built (is_recheck = false), so later re-measurements don't interleave with it.
+# Coverage main lines only use the initial measurement of each batch
+# (is_recheck = false), so later re-measurements don't interleave with it.
 DATASETS = {
     "vw_crawler_overview": (
         "SELECT stat_date, discovered, crawled\n"

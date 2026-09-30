@@ -46,6 +46,6 @@ class QueryStrategy:
                     print(f"Waiting {wait_time} seconds before retrying...")
                     time.sleep(wait_time)
                 else:
-                    # 最後一次也失敗，回傳空 list
-                    print("Max retries reached. Returning empty list.")
+                    # 最後一次也失敗，回傳空 list；錯誤訊息一併印出，才看得出是額度用完還是其他原因
+                    print(f"Max retries reached for query '{query}', returning empty list. Last error: {e}")
                     return []

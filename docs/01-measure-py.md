@@ -43,7 +43,7 @@ It coordinates three layers:
     - `metric_headset_total`, `metric_headset_a`, `metric_headset_b`
     - `metric_randomset_total`, `metric_randomset_a`, `metric_randomset_b`
   - Calls `createDB(..., createTable=True, base=MetricBase)` for metric DB.
-  - Calls `Database/migrations.py:migrate_metric_db()`. `create_all` never alters an existing table, so this adds the new columns to existing tables: `batch_id` / `measured_at` / `batch_age_days` / `is_recheck` on the six coverage tables (primary key becomes `(batch_id, stat_date)`, old rows get the latest batch created on or before their `stat_date`), and the `url_canonical` + crawler-detail columns on `metric_url`. On the first upgrade it also turns never-measured zeros into NULL (`indexed_*` before selectdb was wired in, all `ranked_*`, `crawler_stat_*.indexed`). On every run it sets `is_recheck = (batch_age_days <> 0)` on rows written before the upgrade (`measured_at IS NULL`), keeping `false` where `batch_age_days` is NULL, and prints how many rows it changed per table. Safe to re-run; the container runs it on every start (`entrypoint.sh`) and exits without starting cron if it fails.
+  - Calls `Database/migrations.py:migrate_metric_db()`. `create_all` never alters an existing table, so this adds the new columns to existing tables: `batch_id` / `measured_at` / `batch_age_days` / `is_recheck` on the six coverage tables (primary key becomes `(batch_id, stat_date)`, old rows get the latest batch created on or before their `stat_date`), and the `url_canonical` + crawler-detail columns on `metric_url`. The data changes run only on the first upgrade, detected per coverage table by `batch_id` being added in this run: never-measured zeros become NULL (`indexed_*` before selectdb was wired in, all `ranked_*`, `crawler_stat_*.indexed`), and rows written before the upgrade (`measured_at IS NULL`) get `is_recheck` by the rule in 3.3, per table and per `batch_id`: the row with the earliest `stat_date` among those with `batch_age_days <= 2` is the initial measurement (`false`), every other row is a re-measurement (`true`, including rows whose `batch_age_days` is NULL). It prints the counts per table. Later runs only check the schema, so labels fixed by hand after the upgrade (see [06-rollout-checklist.md](./06-rollout-checklist.md)) are not overwritten. Safe to re-run; the container runs it on every start (`entrypoint.sh`) and exits without starting cron if it fails.
 
 ### 3.2 Dataset creation mode (`--create`)
 
@@ -62,6 +62,12 @@ Flow:
    - Upsert `metric_queries.tags` with strategy tag.
    - Replace associated rows in `metric_url`.
 6. Recompute batch metadata (`meta_total_queries`, `meta_total_urls`, `meta_tag_stats`).
+7. Check the golden set (`check_golden_set`): for each selected tag, count the `metric_url` rows of that tag in the batch. If it is 0 or below `--keywordNums × 3` (a query returns at most 10 URLs, so fewer means most queries failed), print the tag, the count and the minimum, and exit with code 1 without running `--test`.
+
+Failure handling (golden sets used to fail silently, see [05 §7](./05-metric-pipeline-and-queries.md#7-known-data-gaps)):
+
+- If Google Trends returns 0 keywords for every country, no batch is created and `measure.py` exits with code 1. The last SerpApi error of each country is printed. Before this check an empty batch (no queries, no URLs) was created; batches 10–17 came from this.
+- When a keyword search still fails after its retries, `QueryStrategy.getQuery` prints the last SerpApi error and returns no URLs for that keyword; step 7 catches the case where most keywords failed.
 
 ### 3.3 Measure execution mode (`--test`)
 
@@ -71,8 +77,15 @@ Flow:
   - Golden URLs are passed through w3lib `canonicalize_url` (the spider's key) before matching; the raw spelling is looked up too, for rows injected before `golden_inject` canonicalized.
   - Queries `selectdb.selected_urls_current` to determine `is_indexed` flag per golden URL.
   - Without `--select_db_url`, or if selectdb fails, `indexed_num` / `indexed_rate` are written as NULL (not measured) and the other columns are still written.
-  - `is_recheck` is decided per batch from its age, not from `--create`: a batch created today (`batch_age_days = 0`) is the t0 measurement (`is_recheck = false`) and updates the per-URL labels in `metric_url`. Measuring any older batch writes `is_recheck = true` and puts its per-URL labels in `metric_url_recheck`, so the t0 labels are kept. A manual `--test` on the day a batch was built therefore also counts as t0 and overwrites that day's t0 row.
-  - If any `url_state_current_*` shard cannot be scanned, the run aborts without writing coverage, rather than writing an undercount.
+  - `CrawlerAllMetricMeasure` decides `is_recheck` itself, not from `--create`. For one batch and one tag, the first measurement within 2 days of the batch's creation (`batch_age_days <= 2`) is the initial measurement (`is_recheck = false`); every other measurement is a re-measurement. Before writing, it looks for this batch's `is_recheck = false` row in the tag's `_total` table:
+    - none, and `batch_age_days <= 2`: initial measurement;
+    - one exists and its `stat_date` is today (a same-day rerun): still the initial measurement, and it overwrites that row;
+    - otherwise: re-measurement (for example day 7, or a first measurement on day 3).
+
+    The initial measurement updates the per-URL labels in `metric_url`; a re-measurement puts them in `metric_url_recheck` and leaves `metric_url` as it was. The 2-day window lets a failed first-day run be redone the next day.
+  - If a `url_state_current_*` shard cannot be scanned, the failed shards are rescanned up to 3 more times, 30 seconds apart, each time on a new connection (the failed connection is discarded; large shards such as 056 have hit TCP timeouts). If a shard still fails, the measurement stops without writing coverage, rather than writing an undercount, and prints the shard numbers.
+  - If the batch has no golden URL for the tag, the measurement prints an error saying the golden set of this batch was not collected, instead of silently returning.
+  - A failed measurement (no golden URL, or shards that keep failing) does not stop the others: `measure.py` measures every remaining batch and tag, then exits with code 1.
 - `rank`: currently no-op in active implementation.
 
 ## 4. DB Initialization
@@ -102,6 +115,7 @@ Responsibilities:
 - Read or refresh raw trending keyword data.
 - Run one or more golden-set strategies.
 - Persist/refresh query->URL mapping in metric DB.
+- Return the batch id, which `check_golden_set` then checks (3.2 step 7).
 
 ### 5.3 `test`
 

@@ -12,7 +12,7 @@ SOURCE_URL = "postgresql+psycopg2://metric:metric@172.16.191.1:5433/metricdb"
 DEST_URL = "postgresql+psycopg2://neondb_owner:npg_5mJhDMH9LTqB@ep-hidden-morning-a1kzhlt5-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
 
 # 3. 要複製的資料表清單: (Neon 上的表名, 來源 SQL)，共 15 張
-# coverage 表分成兩份：建立 golden set 當天的量測 (NOT is_recheck) 沿用原表名，
+# coverage 表分成兩份：建立當日量測 (NOT is_recheck) 沿用原表名，
 # 事後重量 (is_recheck) 放到 metric_*_recheck_*，Power BI 上的原有圖表不會混入重量的數字。
 COVERAGE_TABLES = [
     f"metric_{set_type}_{suffix}"

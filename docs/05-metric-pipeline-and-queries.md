@@ -41,7 +41,9 @@ flowchart TD
 - Session context manager with rollback on exceptions.
 - Per-keyword commit in strategy generation (limits transaction blast radius).
 - Per-table isolation in migration loop.
-- API retry logic with exponential backoff in keyword search.
+- API retry logic with exponential backoff in keyword search; the last SerpApi error is printed when a keyword or a country is given up.
+- Golden-set collection fails loudly: no batch is created when Google Trends returns 0 keywords, and `--create` exits with code 1 (skipping `--test`) when a tag collected fewer than `--keywordNums × 3` URLs.
+- Failed `url_state_current` shards are rescanned up to 3 times, 30 seconds apart, on new connections.
 
 ## 3. Metric Query Logic (SQL-equivalent)
 
@@ -118,7 +120,7 @@ WHERE url IN (:canonical_and_raw_urls);
 - discovered: at least one row in any shard.
 - crawled: at least one of those rows has `last_fetch_ok` (OR across shards and spellings; a later non-crawled row never overrides an earlier crawled one).
 - shard / team: the crawled row's shard, else the first row found; if no row, `domain_state` by the URL's host, then by its eTLD+1.
-- If any shard cannot be read the run aborts without writing coverage.
+- A shard that fails is rescanned up to 3 more times, 30 seconds apart, on a new connection; merging is an OR / earliest-timestamp, so rows seen twice are not double-counted. If a shard still cannot be read, the run stops without writing coverage and prints the shard numbers.
 
 ### 3.5 Status snapshot per shard
 
@@ -172,15 +174,16 @@ For each group `G in {Total, A, B}`:
 `ranked_*` is not implemented and written as NULL. `indexed_*` is NULL when not measured.
 
 Each coverage row also records `batch_id`, `measured_at`, `batch_age_days` and
-`is_recheck` (false only when the batch was created that day). The daily
-cron re-measures each batch at 7, 14 and 27 days, so the gap between the t0
-row and the day-27 row shows how much the crawler discovered on its own after
-the queries trended, before `golden_inject` force-injects the batch at 4 weeks.
+`is_recheck` (false only for the initial measurement: per batch and tag, the
+first measurement within 2 days of creation). The daily cron re-measures each
+batch at 7, 14 and 27 days, so the gap between the initial measurement and the
+day-27 row shows how much the crawler discovered on its own after the queries
+trended, before `golden_inject` force-injects the batch at 4 weeks.
 After injection, discovered rates of that batch are close to 100% by
 construction; `source` / `first_seen` separate injected from naturally
 discovered rows.
 
-Per-URL state: `metric_url` holds t0, `metric_url_recheck` holds each
+Per-URL state: `metric_url` holds the initial measurement, `metric_url_recheck` holds each
 re-measurement (keyed by `metric_url_id, stat_date`). Example, why golden URLs
 were still undiscovered or uncrawled 27 days after the batch was built:
 
@@ -254,4 +257,20 @@ Cron defaults in Dockerfile currently use:
 
 - `SearchEngineAllMetricMeasure` and `TypesenseRankMeasure` are stubs in active code.
 - `--measure all` has no explicit branch in `measure.py`.
+
+## 7. Known Data Gaps
+
+Some batches have no golden set. The cause is not confirmed; SerpApi running out
+of quota is suspected. At the time the code did not report either failure.
+
+| Batch | Created | What is missing | How it happened |
+|-------|---------|-----------------|-----------------|
+| 9 | 2026-06-12 | head: 1,000 queries, 0 URLs (random is complete: 7,179 URLs) | every organic search for head failed; `getQuery` returned no URLs |
+| 10–17 | 2026-06-19 to 2026-08-07 | no queries, no URLs (empty batches) | Google Trends returned 0 keywords, and the batch was created anyway |
+
+Measuring these batches now fails with "No golden URLs ... golden set of this
+batch was not collected" instead of returning silently. The empty batches also
+matter outside this repo: the crawler's golden domain tiering counted them as
+batches. The checks in [01 §3.2](./01-measure-py.md#32-dataset-creation-mode---create)
+stop both cases at `--create` time.
 

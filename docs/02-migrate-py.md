@@ -23,8 +23,9 @@ This is an ETL-style table replication utility, intended for BI/reporting consum
 | `metric_headset_recheck_a` / `_b` / `_total` | `metric_headset_*`, `WHERE is_recheck` |
 | `metric_randomset_recheck_a` / `_b` / `_total` | `metric_randomset_*`, `WHERE is_recheck` |
 
-The coverage tables keep their names on Neon and only carry the measurement
-taken on the day each batch was built (t0), so existing Power BI charts show the
+The coverage tables keep their names on Neon and only carry the initial
+measurement of each batch (`NOT is_recheck`: per batch and tag, the first
+measurement within 2 days of creation), so existing Power BI charts show the
 same series as before. Re-measurements (day 7 / 14 / 27 and manual runs on older
 batches) go to the `*_recheck_*` tables, which have the same columns.
 

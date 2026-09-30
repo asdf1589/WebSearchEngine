@@ -19,12 +19,15 @@ from Database.ModelFactory.AppModelFactory import AppModelFactory
 from Database.utils import createAllMetricModel, createDB
 from Database.migrations import migrate_metric_db
 
+from Metric.errors import MeasureError
+
 from argparse import ArgumentParser
 
 import os
+import sys
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 
 def get_latest_batch_id(db, modelFactory) -> int:
     """
@@ -43,21 +46,6 @@ def get_latest_batch_id(db, modelFactory) -> int:
         latest_id = session.execute(stmt).scalar()
         
         return latest_id
-
-def get_batch_age_days(db, modelFactory, batch_id):
-    """
-    今天距 batch 建立日期的天數 (0 = 今天建立)。找不到 batch 時回傳 None。
-    """
-    MetricBatch = modelFactory.create_metric_batches()
-
-    with db.session() as session:
-        created_at = session.execute(
-            select(MetricBatch.created_at).where(MetricBatch.id == batch_id)
-        ).scalar()
-
-    if created_at is None:
-        return None
-    return (datetime.now().date() - created_at.date()).days
 
 def get_batch_ids_by_age(db, modelFactory, ages) -> list:
     """
@@ -118,6 +106,34 @@ def createDataset(args, modelFactory: AppModelFactory, crawlerDB, metricDB):
         context.setQueryStrategy(HeadQueryStrategy(metricDB, modelFactory, batch_id, rawData, args.keywordNums))
         context.getGoldenSet()
 
+    return batch_id
+
+def check_golden_set(db, modelFactory, batch_id, tags, keyword_nums):
+    """
+    --create 之後檢查這個 batch 每個 tag 收集到幾條 golden URL。
+    每個 query 最多 10 條結果，少於 keywordNums × 3 條代表大部分 query 都失敗了 (例如 SerpApi 額度用完)。
+    不通過時丟出 MeasureError：main 以錯誤碼 1 結束，不接著執行 --test。
+    """
+    MetricQuery = modelFactory.create_metric_queries()
+    MetricURL = modelFactory.create_metric_url()
+    min_urls = keyword_nums * 3
+    problems = []
+
+    with db.session() as session:
+        for tag in tags:
+            n = session.execute(
+                select(func.count())
+                .select_from(MetricURL)
+                .join(MetricQuery, MetricURL.query_id == MetricQuery.id)
+                .where(MetricQuery.batch_id == batch_id, MetricQuery.tags.contains([tag]))
+            ).scalar()
+            print(f"Golden set check: batch {batch_id}, tag '{tag}': {n} URL(s), expected at least {min_urls}")
+            if n == 0 or n < min_urls:
+                problems.append(f"tag '{tag}' has {n} URL(s), expected at least {min_urls} (--keywordNums {keyword_nums} x 3)")
+
+    if problems:
+        raise MeasureError(f"golden set collection failed for batch {batch_id}: {'; '.join(problems)}")
+
 def test(args, modelFactory: AppModelFactory, crawlerDB, metricDB, selectDB):
     context: MeasureContext = MeasureContext()
 
@@ -135,12 +151,20 @@ def test(args, modelFactory: AppModelFactory, crawlerDB, metricDB, selectDB):
         else:
             batch_ids = [get_latest_batch_id(metricDB, modelFactory)]
 
+        # 建立當日量測還是重量由 CrawlerAllMetricMeasure 依 coverage 表既有的列判斷 (與是否帶 --create 無關)
+        failures = []
         for batch_id in batch_ids:
-            # 量的是今天建立的 batch 算 t0，其他都是事後重量 (與是否帶 --create 無關)
-            is_recheck = get_batch_age_days(metricDB, modelFactory, batch_id) != 0
             for tag in args.strategy:
-                context.setMeasure(CrawlerAllMetricMeasure(modelFactory, crawlerDB, metricDB, selectDB, batch_id, tag, is_recheck))
-                context.test()
+                context.setMeasure(CrawlerAllMetricMeasure(modelFactory, crawlerDB, metricDB, selectDB, batch_id, tag))
+                try:
+                    context.test()
+                except MeasureError as e:
+                    # 一個 batch / tag 失敗不影響其他量測，全部量完後再以錯誤碼 1 結束
+                    print(f"[Error] {e}")
+                    failures.append(f"batch {batch_id} tag '{tag}'")
+
+        if failures:
+            raise MeasureError(f"crawler_all failed for {', '.join(failures)}")
 
 def main():
     args = parseArgs()
@@ -157,10 +181,16 @@ def main():
         migrate_metric_db(metricDB)
     selectDB = createDB("select", "select", args.select_db_url, "selectdb") if args.select_db_url else None
 
-    if args.create:
-        createDataset(args, modelFactory, crawlerDB, metricDB)
-    if args.test:
-        test(args, modelFactory, crawlerDB, metricDB, selectDB)
+    try:
+        if args.create:
+            batch_id = createDataset(args, modelFactory, crawlerDB, metricDB)
+            check_golden_set(metricDB, modelFactory, batch_id, args.strategy, args.keywordNums)
+        if args.test:
+            test(args, modelFactory, crawlerDB, metricDB, selectDB)
+    except MeasureError as e:
+        # --create 失敗時不會走到 --test
+        print(f"[Error] {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()

@@ -1,4 +1,5 @@
 from Metric.RawDataReader.RawDataReader import RawDataReader
+from Metric.errors import MeasureError
 from serpapi import GoogleSearch
 from datetime import datetime
 from sqlalchemy import desc
@@ -126,6 +127,15 @@ class DatabaseRawDataReader(RawDataReader):
         # 3. 排序
         sorted_data = sorted(dedup_data, key=lambda x: x['frequency'], reverse=True)
 
+        # 一個關鍵字都沒抓到就不建立 batch。
+        # 之前會照樣建立一個沒有 query、沒有 URL 的空 batch (batch 10–17 就是這樣來的)，
+        # 空 batch 會被當成最新的 batch 去量測，也讓 crawler 端的 golden domain 分級失效。
+        if not sorted_data:
+            raise MeasureError(
+                f"Google Trends returned 0 keywords for all {len(self.countries)} countries "
+                f"(SerpApi errors, if any, are printed above); no batch created"
+            )
+
         # 4. 存入資料庫
         self._save_to_database(sorted_data)
         
@@ -226,6 +236,6 @@ class DatabaseRawDataReader(RawDataReader):
                     print(f"Waiting {retry_delay} seconds before retrying...")
                     time.sleep(retry_delay)
                 else:
-                    print(f"All {max_retries + 1} attempts failed for {geo}. Giving up.")
+                    print(f"All {max_retries + 1} attempts failed for {geo}. Giving up. Last error: {error_msg}")
                     return []
         return []
