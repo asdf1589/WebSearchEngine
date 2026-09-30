@@ -1,7 +1,5 @@
 import pandas as pd
 from sqlalchemy import create_engine
-import os
-import sys
 import time
 
 # --- 設定區 ---
@@ -10,10 +8,8 @@ import time
 SOURCE_URL = "postgresql+psycopg2://metric:metric@172.16.191.1:5433/metricdb"
 
 # 2. 目的：Neon (有 SSL)
-# 連線字串含帳號密碼，不可寫在 repo 裡；由環境變數 NEON_URL 提供，例如
-#   postgresql+psycopg2://<user>:<password>@<host>/neondb?sslmode=require
-# (不要加 channel_binding=require，psycopg2 相容性較差；保留 sslmode=require)
-DEST_URL = os.environ.get("NEON_URL")
+# 注意：我移除了 channel_binding=require 以增加相容性，保留 sslmode=require
+DEST_URL = "postgresql+psycopg2://neondb_owner:npg_5mJhDMH9LTqB@ep-hidden-morning-a1kzhlt5-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
 
 # 3. 要複製的資料表清單: (Neon 上的表名, 來源 SQL)，共 15 張
 # coverage 表分成兩份：建立 golden set 當天的量測 (NOT is_recheck) 沿用原表名，
@@ -36,10 +32,6 @@ for table in COVERAGE_TABLES:
 
 def migrate_data():
     print("--- 開始資料遷移工作 ---")
-
-    if not DEST_URL:
-        print("未設定環境變數 NEON_URL，跳過資料遷移。")
-        sys.exit(1)
     
     # 建立連線引擎
     try:
