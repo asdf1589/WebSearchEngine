@@ -54,14 +54,19 @@ Flow:
    - Uses latest cached `metric_batches` entry if fresh.
    - Otherwise fetches from SerpApi and persists new batch/query rows.
 3. Read latest batch id via `get_latest_batch_id()`.
-4. For each strategy:
-   - `random`: sample `keywordNums` keywords.
-   - `head`: pick top `keywordNums` by frequency.
-5. For each chosen keyword:
-   - Query Google organic results via SerpApi.
-   - Upsert `metric_queries.tags` with strategy tag.
-   - Replace associated rows in `metric_url`.
-6. Recompute batch metadata (`meta_total_queries`, `meta_total_urls`, `meta_tag_stats`).
+4. For each strategy tag, count the batch's queries that carry the tag and have at least one `metric_url` row:
+   - At least `keywordNums` (or every keyword, if the batch has fewer): the tag's golden set is complete. Print that it is skipped; SerpApi is not called.
+   - Otherwise fill it up: tagged queries without URLs are queried again; if fewer than `keywordNums` queries carry the tag, pick new keywords without the tag:
+     - `random`: sample from the keywords without the `random` tag.
+     - `head`: go down the frequency order, skipping keywords that already carry `head`.
+   - Print how many queries were re-queried and how many keywords were added.
+5. For each picked keyword:
+   - Add the strategy tag to `metric_queries.tags`.
+   - If the query already has `metric_url` rows (another tag picked it), keep them; SerpApi is not called.
+   - Otherwise query Google organic results via SerpApi and insert the rows into `metric_url`.
+   - Existing `metric_url` rows are never deleted, so a rerun of `--create` on the same batch keeps their ids, the per-URL results written by the initial measurement, and the `metric_url_recheck` rows that reference them.
+   - A query for which SerpApi returned 0 results has no `metric_url` rows, so it is queried again on every `--create` run of that batch.
+6. Recompute batch metadata (`meta_total_queries`, `meta_total_urls`, `meta_tag_stats`), also when the tag was skipped.
 7. Check the golden set (`check_golden_set`): for each selected tag, count the `metric_url` rows of that tag in the batch. If it is 0 or below `--keywordNums × 3` (a query returns at most 10 URLs, so fewer means most queries failed), print the tag, the count and the minimum, and exit with code 1 without running `--test`.
 
 Failure handling (golden sets used to fail silently, see [05 §7](./05-metric-pipeline-and-queries.md#7-known-data-gaps)):

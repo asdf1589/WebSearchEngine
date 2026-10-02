@@ -1,5 +1,4 @@
 from Metric.Query.QueryStrategy import QueryStrategy
-from tqdm import tqdm
 from sqlalchemy import func
 
 class HeadQueryStrategy(QueryStrategy):
@@ -17,73 +16,11 @@ class HeadQueryStrategy(QueryStrategy):
         self.batch_id = batch_id
     
     def getGoldenSet(self):
-        # 1. 根據 Frequency 排序並取出前 N 名
-        sorted_data = sorted(self.rawData, key=lambda x: x["frequency"], reverse=True)
-        target_data = sorted_data[:self.keywordNums]
-
-        # 準備 Models
-        MetricQuery = self.modelFactory.create_metric_queries()
-        MetricURL = self.modelFactory.create_metric_url()
-        MetricBatch = self.modelFactory.create_metric_batches()
-
-        print(f"Processing Head Strategy for Batch {self.batch_id}...")
-        pbar = tqdm(total=len(target_data))
-
-        with self.db.session() as session:
-            for s in target_data:
-                key = s['keyword']
-                
-                # A. 呼叫 SerpApi 取得 URL (使用父類別的方法)
-                # 注意：這裡會消耗 API 額度與時間
-                url_list = self.getQuery(key)
-                
-                # B. 處理 MetricQuery (Upsert Logic)
-                # 先檢查這個關鍵字在這個 Batch 是否已經存在 (例如由 Trending 匯入過)
-                query_obj = session.query(MetricQuery).filter_by(
-                    batch_id=self.batch_id, 
-                    keyword=key
-                ).first()
-
-                if query_obj:
-                    # 情境 1: 關鍵字已存在 (例如它是 Trending 關鍵字)
-                    # 更新 tags：如果 "head" 不在裡面，就加進去
-                    current_tags = list(query_obj.tags) # 複製 list
-                    if "head" not in current_tags:
-                        current_tags.append("head")
-                        query_obj.tags = current_tags # 觸發 SQLAlchemy 更新
-                else:
-                    # 情境 2: 關鍵字不存在，建立新的
-                    query_obj = MetricQuery(
-                        batch_id=self.batch_id,
-                        keyword=key,
-                        geo=s.get('geo', []), # 繼承原始資料的 geo
-                        frequency=s['frequency'],
-                        tags=["head"] # 標記為 head
-                    )
-                    session.add(query_obj)
-                    session.flush() # 取得 ID
-                
-                # C. 處理 MetricURL
-                # 為了避免重跑時重複插入，先刪除該 Query 舊的 URL (如果有)
-                session.query(MetricURL).filter_by(query_id=query_obj.id).delete()
-
-                # 寫入新的 URL
-                for idx, u in enumerate(url_list):
-                    url_obj = MetricURL(
-                        query_id=query_obj.id,
-                        url=u,
-                        rank=idx + 1
-                    )
-                    session.add(url_obj)
-
-                # 每一筆 Commit 一次，避免長時間佔用 Transaction 或 API 中斷導致全部回滾
-                session.commit()
-                pbar.update(1)
-
-            # D. 最後更新 Batch Metadata (統計數據)
-            self._update_batch_stats(session, MetricBatch, MetricQuery, MetricURL)
-            
-        pbar.close()
+        # 根據 Frequency 由高到低往下挑，跳過已帶 head tag 的關鍵字
+        self._collectGoldenSet(
+            "head",
+            lambda candidates, need: sorted(candidates, key=lambda x: x["frequency"], reverse=True)[:need]
+        )
 
     def _update_batch_stats(self, session, MetricBatch, MetricQuery, MetricURL):
         """
