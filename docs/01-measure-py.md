@@ -75,8 +75,8 @@ Failure handling (golden sets used to fail silently, see [05 §7](./05-metric-pi
 - `status`: `indexed` on `crawler_stat_total` is `count(*)` of `selectdb.selected_urls_current` (needs `--select_db_url`; NULL otherwise, and a failed count keeps the value measured earlier that day). Team A/B tables have no selectdb split, so their `indexed` is NULL.
 - `crawler_all`: for each batch (latest, `--batch_id`, or `--batch_age_days`) and each selected strategy tag (`head`/`random`), runs `CrawlerAllMetricMeasure`.
   - Golden URLs are passed through w3lib `canonicalize_url` (the spider's key) before matching; the raw spelling is looked up too, for rows injected before `golden_inject` canonicalized.
-  - Queries `selectdb.selected_urls_current` to determine `is_indexed` flag per golden URL.
-  - Without `--select_db_url`, or if selectdb fails, `indexed_num` / `indexed_rate` are written as NULL (not measured) and the other columns are still written.
+  - Queries `selectdb.selected_urls_current`; a golden URL is `is_indexed` when it is in that list and crawled (`last_fetch_ok IS NOT NULL`, the same check as `is_crawled`). It prints how many URLs of the tag are in the list but not crawled.
+  - Without `--select_db_url`, if selectdb fails, or if `selected_urls_current` is empty, `indexed_num` / `indexed_rate` are written as NULL (not measured) and the other columns are still written.
   - `CrawlerAllMetricMeasure` decides `is_recheck` itself, not from `--create`. For one batch and one tag, the first measurement within 2 days of the batch's creation (`batch_age_days <= 2`) is the initial measurement (`is_recheck = false`); every other measurement is a re-measurement. Before writing, it looks for this batch's `is_recheck = false` row in the tag's `_total` table:
     - none, and `batch_age_days <= 2`: initial measurement;
     - one exists and its `stat_date` is today (a same-day rerun): still the initial measurement, and it overwrites that row;
@@ -150,6 +150,6 @@ flowchart TD
 
 - `rank` pathway is not active; `ranked_num` / `ranked_rate` are written as NULL.
 - `indexed` is populated from `selectdb.selected_urls_current` when `--select_db_url` is provided.
-- `indexed` means "selected by IndexSelection", which does not require the page to have been fetched, so IndexCov can exceed CrawlCov. `metric_url.is_indexed AND NOT is_crawled` counts those URLs.
+- `indexed` means "selected by IndexSelection and crawled". IndexSelection's list does not require the page to have been fetched, so a selected but uncrawled URL is not counted; IndexCov never exceeds CrawlCov. The printed "in selected_urls_current but not crawled" count shows how many were left out.
 - `--measure all` appears in choices but no explicit branch handles it in current code.
 

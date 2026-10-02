@@ -151,16 +151,55 @@ FROM public.selected_urls_current
 WHERE url = ANY(:golden_urls);
 ```
 
-URLs found in the result set are marked `is_indexed = True`. This query is batched in chunks of 10,000 URLs and uses the same canonical + raw spellings as 3.4a. If selectdb is not configured or the query fails, `is_indexed` and `indexed_*` are written as NULL.
+URLs found in the result set are in the candidate list. This query is batched in chunks of 10,000 URLs and uses the same canonical + raw spellings as 3.4a.
 
-"Indexed" here means selected by IndexSelection, which does not require the page to have been fetched. To see how many selected golden URLs were never fetched:
+Definition: a golden URL is indexed when, at measurement time, it is in `selectdb.selected_urls_current` **and** it has been crawled. Crawled is the same check as `is_crawled` / CrawlCov (3.4a): some `url_state_current` row for the URL has `last_fetch_ok IS NOT NULL`. `selected_urls_current` is IndexSelection's candidate list; the v1 pipeline (upstream WebSearchEngine PR #4) selects a URL once its `first_seen` is before the cutoff, without requiring it to have been fetched. A selected URL that has not been crawled is therefore not counted, so `is_indexed` implies `is_crawled` and `indexed_num <= crawled_num` in every coverage row. The measurement prints how many golden URLs of the tag are in the list but not crawled:
 
-```sql
-SELECT count(*) FILTER (WHERE is_indexed AND NOT is_crawled) AS selected_not_crawled,
-       count(*) FILTER (WHERE is_indexed) AS selected
-FROM metric_url mu JOIN metric_queries mq ON mq.id = mu.query_id
-WHERE mq.batch_id = :batch_id;
 ```
+   Tag 'head': N URL(s) in selected_urls_current but not crawled (not counted as indexed)
+```
+
+`is_indexed` and `indexed_*` are written as NULL (not measured) when:
+
+- selectdb is not configured, or the query fails;
+- `selected_urls_current` has no rows. Before the lookup the measurement runs
+
+  ```sql
+  SELECT NOT EXISTS (SELECT 1 FROM public.selected_urls_current);
+  ```
+
+  and, if it is true, prints `selected_urls_current 是空的，indexed 記為 NULL`. An empty candidate list (for example after a reset, or a failed refresh) says nothing about whether a golden URL would be selected, so it is not counted as 0, even for crawled URLs. The other columns (`total`, `discovered_*`, `crawled_*`) are written as usual.
+
+The hourly status count (`crawler_stat_total.indexed`, see [01-measure-py.md](./01-measure-py.md)) is not affected: an empty list is written as 0, which is the real row count.
+
+#### Historical data
+
+Coverage rows in the production metricdb written before this definition used two older rules. Commits are from upstream `main`.
+
+**Before 2026-06-03: indexed was not measured.** The code did not query selectdb and hard-coded `indexed` to `False` for every URL (`ccd935b`, `Metric/Measure/CrawlerAllMetricMeasure.py` lines 81-83), so every `indexed_num` from April and May is 0. The upgrade's automatic cleanup (`Database/migrations.py:_clear_unmeasured_values`, see [06-rollout-checklist.md](./06-rollout-checklist.md)) sets `indexed_num` / `indexed_rate` to NULL on these rows. Six of them have a non-zero `indexed_rate` next to `indexed_num = 0`. The code at that time could not have written these values (its rate is `indexed_num / total`, which is 0); where they came from is unknown. The cleanup clears them too. Original values:
+
+| Table | stat_date | total | indexed_num | indexed_rate |
+|-------|-----------|------:|------------:|-------------:|
+| `metric_headset_total` | 2026-04-01 | 7245 | 0 | 0.184 |
+| `metric_headset_total` | 2026-04-16 | 7439 | 0 | 0.185 |
+| `metric_headset_total` | 2026-05-03 | 7329 | 0 | 0.164 |
+| `metric_randomset_total` | 2026-04-01 | 7968 | 0 | 0.181 |
+| `metric_randomset_total` | 2026-04-17 | 7958 | 0 | 0.228 |
+| `metric_randomset_total` | 2026-05-02 | 7934 | 0 | 0.232 |
+
+**From 2026-06-05: indexed meant "in the list" only.** PR #3 (`e04dbf7`, merged 2026-06-05) marked every golden URL found in `selected_urls_current` as indexed, whether or not it had been crawled (`Metric/Measure/CrawlerAllMetricMeasure.py:203-209`), and counted that flag directly (`:230`). The 2026-06-05 and 2026-06-12 rows were computed this way and are not comparable with rows written under the current definition. They cannot be recomputed: the production metricdb keeps no per-URL result per measurement date (`metric_url` has no date column and was overwritten by every later measurement). Both the automatic cleanup (`stat_date` before 2026-06-05) and the manual fix in [06-rollout-checklist.md](./06-rollout-checklist.md) (`stat_date >= '2026-09-17'`) leave these rows unchanged. Original values (2026-06-12 has no head rows: batch 9's head golden set was not collected, see §7):
+
+| Table | stat_date | total | crawled_num | indexed_num | indexed_rate |
+|-------|-----------|------:|------------:|------------:|-------------:|
+| `metric_headset_total` | 2026-06-05 | 7339 | 2127 | 1509 | 0.2056 |
+| `metric_headset_a` | 2026-06-05 | 3815 | 1120 | 710 | 0.1861 |
+| `metric_headset_b` | 2026-06-05 | 3483 | 1007 | 799 | 0.2294 |
+| `metric_randomset_total` | 2026-06-05 | 7945 | 2208 | 1449 | 0.1824 |
+| `metric_randomset_a` | 2026-06-05 | 4073 | 1176 | 643 | 0.1579 |
+| `metric_randomset_b` | 2026-06-05 | 3782 | 1032 | 806 | 0.2131 |
+| `metric_randomset_total` | 2026-06-12 | 7738 | 1926 | 1260 | 0.1628 |
+| `metric_randomset_a` | 2026-06-12 | 3916 | 1036 | 578 | 0.1476 |
+| `metric_randomset_b` | 2026-06-12 | 3560 | 890 | 682 | 0.1916 |
 
 ### 3.7 Coverage formulas
 

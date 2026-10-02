@@ -105,6 +105,15 @@ class CrawlerAllMetricMeasure(Measure):
 
         return found_map
 
+    def _selected_is_empty(self):
+        """
+        selected_urls_current 一列都沒有時回傳 True。
+        """
+        with self.selectDB.session() as session:
+            return session.execute(
+                text("SELECT NOT EXISTS (SELECT 1 FROM public.selected_urls_current)")
+            ).scalar()
+
     def _load_indexed_urls(self, url_tuple):
         """
         查詢 SelectDB 的 selected_urls_current，回傳有被選取的 URL 集合
@@ -340,17 +349,22 @@ class CrawlerAllMetricMeasure(Measure):
                 f"coverage not written"
             )
 
-        # 查詢 SelectDB 取得 indexed 狀態。沒有 SelectDB 或查詢失敗時 indexed 記為 NULL (沒量到)，而不是 0。
+        # 查詢 SelectDB 取得 indexed 狀態。沒有 SelectDB、查詢失敗、或 selected_urls_current 是空的時
+        # indexed 記為 NULL (沒量到)，而不是 0。
         indexed_measured = False
         if self.selectDB is not None:
             print(f"🔍 Checking SelectDB for index status ...")
             try:
-                indexed_urls = self._load_indexed_urls(lookup_tuple)
-                for url in indexed_urls:
-                    canon = lookup_to_canonical.get(url)
-                    if canon is not None:
-                        url_status_map[canon]['indexed'] = True
-                indexed_measured = True
+                if self._selected_is_empty():
+                    # 候選名單是空的 (例如 reset 後或 refresh 失敗)，查不到不代表沒被選取
+                    print("[Warning] selected_urls_current 是空的，indexed 記為 NULL")
+                else:
+                    indexed_urls = self._load_indexed_urls(lookup_tuple)
+                    for url in indexed_urls:
+                        canon = lookup_to_canonical.get(url)
+                        if canon is not None:
+                            url_status_map[canon]['indexed'] = True
+                    indexed_measured = True
             except Exception as e:
                 print(f"[Warning] selectdb lookup failed, indexed coverage left empty: {e}")
 
@@ -367,13 +381,19 @@ class CrawlerAllMetricMeasure(Measure):
         }
         
         bulk_update_mappings = []
+        # 在 selected_urls_current 裡但還沒抓取的 golden URL 數 (不算 indexed)
+        selected_not_crawled = 0
 
         for url_str, ids in url_id_map.items():
             status = url_status_map.get(url_str, {})
-            
+
             is_disc = status.get('discovered', False)
             is_crawl = status.get('crawled', False)
-            is_idx = status.get('indexed', False)
+            # indexed = 在候選名單裡，而且已抓取 (與 crawled 同一個判斷：last_fetch_ok IS NOT NULL)
+            is_selected = status.get('indexed', False)
+            is_idx = is_selected and is_crawl
+            if is_selected and not is_crawl:
+                selected_not_crawled += 1
             shard_id = status.get('shard_id', -1)
             
             # 如果 URL table 沒找到，嘗試用 Domain table 找 Team
@@ -477,6 +497,8 @@ class CrawlerAllMetricMeasure(Measure):
         # 5. 輸出報告
         # ==========================================
         self._print_report(stats, indexed_measured, batch_age_days)
+        if indexed_measured:
+            print(f"   Tag '{self.tag}': {selected_not_crawled} URL(s) in selected_urls_current but not crawled (not counted as indexed)")
 
     def _save_recheck_rows(self, session, mappings, stat_date, measured_at, batch_age_days):
         MetricURLRecheck = self.modelFactory.create_metric_url_recheck()
